@@ -1,0 +1,14 @@
+{
+  "name": "fat-loss-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^9.3.0",
+    "@supabase/supabase-js": "^2.43.0",
+    "express": "^4.19.2",
+    "node-cron": "^3.0.3"
+  }
+}
