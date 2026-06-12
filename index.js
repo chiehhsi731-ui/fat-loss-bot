@@ -1,0 +1,206 @@
+const express = require('express');
+const line = require('@line/bot-sdk');
+const { createClient } = require('@supabase/supabase-js');
+const cron = require('node-cron');
+
+const app = express();
+
+const lineConfig = {
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
+};
+
+const client = new line.messagingApi.MessagingApiClient({
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+});
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+app.use('/webhook', line.middleware(lineConfig));
+
+app.post('/webhook', async (req, res) => {
+  res.status(200).end();
+  const events = req.body.events;
+  for (const event of events) {
+    if (event.type === 'message' && event.message.type === 'text') {
+      await handleMessage(event);
+    } else if (event.type === 'follow') {
+      await handleFollow(event);
+    }
+  }
+});
+
+async function handleFollow(event) {
+  const userId = event.source.userId;
+  const profile = await client.getProfile(userId);
+  await supabase.from('users').upsert({
+    id: userId,
+    display_name: profile.displayName,
+    picture_url: profile.pictureUrl,
+  });
+  await client.replyMessage({
+    replyToken: event.replyToken,
+    messages: [{
+      type: 'text',
+      text: `歡迎加入減脂挑戰！🏋️\n\n📋 指令說明：\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n早餐 雞胸飯 → 搜尋食物\n今日熱量 → 查看今日攝取\n我的進度 → 查看本週進度\n\n開啟 APP 建立你的挑戰隊伍！`,
+    }],
+  });
+}
+
+async function handleMessage(event) {
+  const userId = event.source.userId;
+  const text = event.message.text.trim();
+  const groupId = event.source.groupId || null;
+
+  // 確保使用者存在
+  await supabase.from('users').upsert({ id: userId });
+
+  // 體重記錄
+  if (text.startsWith('體重')) {
+    const weight = parseFloat(text.replace('體重', '').trim());
+    if (isNaN(weight)) return replyText(event, '格式錯誤，請輸入：體重 62.5');
+    await supabase.from('body_records').insert({ user_id: userId, weight, team_id: null });
+    await updateStreak(userId);
+    return replyText(event, `✅ 體重已記錄：${weight} kg\n🔥 繼續加油！`);
+  }
+
+  // 體脂記錄
+  if (text.startsWith('體脂')) {
+    const bodyFat = parseFloat(text.replace('體脂', '').trim());
+    if (isNaN(bodyFat)) return replyText(event, '格式錯誤，請輸入：體脂 21.3');
+    await supabase.from('body_records').insert({ user_id: userId, body_fat: bodyFat, team_id: null });
+    return replyText(event, `✅ 體脂已記錄：${bodyFat}%`);
+  }
+
+  // 飲水記錄
+  if (text.startsWith('飲水')) {
+    const water = parseInt(text.replace('飲水', '').trim());
+    if (isNaN(water)) return replyText(event, '格式錯誤，請輸入：飲水 500');
+    await supabase.from('body_records').insert({ user_id: userId, water_ml: water, team_id: null });
+    return replyText(event, `✅ 飲水已記錄：${water} ml 💧`);
+  }
+
+  // 飲食搜尋
+  if (text.startsWith('早餐') || text.startsWith('午餐') || text.startsWith('晚餐') || text.startsWith('點心')) {
+    const parts = text.split(' ');
+    const mealType = parts[0];
+    const foodName = parts.slice(1).join(' ');
+    if (!foodName) return replyText(event, `格式：${mealType} 食物名稱\n例：${mealType} 雞胸飯`);
+    
+    const { data: foods } = await supabase
+      .from('food_database')
+      .select('*')
+      .ilike('name', `%${foodName}%`)
+      .limit(3);
+
+    if (!foods || foods.length === 0) {
+      return replyText(event, `找不到「${foodName}」\n請直接輸入卡路里：\n${mealType} ${foodName} 500`);
+    }
+
+    const foodList = foods.map((f, i) => `${i + 1}. ${f.name} ${f.calories_per_100g}kcal/100g`).join('\n');
+    return replyText(event, `🔍 搜尋結果：\n${foodList}\n\n回覆編號選擇，或直接輸入：\n${mealType} ${foodName} 卡路里數字`);
+  }
+
+  // 手動卡路里記錄（早餐 食物 500）
+  const mealMatch = text.match(/^(早餐|午餐|晚餐|點心)\s+(.+)\s+(\d+)$/);
+  if (mealMatch) {
+    const [, mealType, foodName, calories] = mealMatch;
+    await supabase.from('meal_records').insert({
+      user_id: userId,
+      team_id: null,
+      meal_type: mealType,
+      food_name: foodName,
+      calories: parseInt(calories),
+    });
+    return replyText(event, `✅ ${mealType}已記錄：${foodName} ${calories} kcal`);
+  }
+
+  // 今日熱量
+  if (text === '今日熱量') {
+    const today = new Date().toISOString().split('T')[0];
+    const { data } = await supabase
+      .from('meal_records')
+      .select('calories, meal_type, food_name')
+      .eq('user_id', userId)
+      .gte('recorded_at', `${today}T00:00:00`)
+      .lte('recorded_at', `${today}T23:59:59`);
+
+    if (!data || data.length === 0) return replyText(event, '今天還沒有飲食記錄 🍽️');
+    const total = data.reduce((sum, r) => sum + r.calories, 0);
+    const list = data.map(r => `${r.meal_type} ${r.food_name} ${r.calories}kcal`).join('\n');
+    return replyText(event, `📊 今日飲食：\n${list}\n\n總計：${total} kcal`);
+  }
+
+  // 我的進度
+  if (text === '我的進度') {
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const { data } = await supabase
+      .from('body_records')
+      .select('weight, body_fat, recorded_at')
+      .eq('user_id', userId)
+      .gte('recorded_at', weekAgo)
+      .order('recorded_at', { ascending: false })
+      .limit(7);
+
+    if (!data || data.length === 0) return replyText(event, '本週還沒有記錄 📝');
+    const latest = data[0];
+    const oldest = data[data.length - 1];
+    const weightDiff = latest.weight && oldest.weight ? (latest.weight - oldest.weight).toFixed(1) : null;
+    let msg = `📈 本週進度（${data.length}/7天）\n`;
+    if (latest.weight) msg += `體重：${latest.weight} kg`;
+    if (weightDiff) msg += `（${weightDiff > 0 ? '+' : ''}${weightDiff}）`;
+    if (latest.body_fat) msg += `\n體脂：${latest.body_fat}%`;
+    return replyText(event, msg);
+  }
+}
+
+async function updateStreak(userId) {
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const { data } = await supabase
+    .from('body_records')
+    .select('recorded_at')
+    .eq('user_id', userId)
+    .gte('recorded_at', `${yesterday}T00:00:00`)
+    .lte('recorded_at', `${yesterday}T23:59:59`)
+    .limit(1);
+
+  const { data: member } = await supabase
+    .from('team_members')
+    .select('streak')
+    .eq('user_id', userId)
+    .limit(1)
+    .single();
+
+  if (member) {
+    const newStreak = data && data.length > 0 ? (member.streak || 0) + 1 : 1;
+    await supabase.from('team_members').update({ streak: newStreak }).eq('user_id', userId);
+  }
+}
+
+function replyText(event, text) {
+  return client.replyMessage({
+    replyToken: event.replyToken,
+    messages: [{ type: 'text', text }],
+  });
+}
+
+// 每日早上8點提醒
+cron.schedule('0 8 * * *', async () => {
+  console.log('早晨提醒推播');
+}, { timezone: 'Asia/Taipei' });
+
+// 每日晚上9點提醒
+cron.schedule('0 21 * * *', async () => {
+  console.log('晚間提醒推播');
+}, { timezone: 'Asia/Taipei' });
+
+// 每週一早上9點週報
+cron.schedule('0 9 * * 1', async () => {
+  console.log('週報推播');
+}, { timezone: 'Asia/Taipei' });
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
