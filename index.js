@@ -60,11 +60,13 @@ async function handleImageMessage(event) {
   const messageId = event.message.id;
 
   try {
-    // 下載圖片
-    const stream = await client.getMessageContent(messageId);
-    const chunks = [];
-    for await (const chunk of stream) chunks.push(chunk);
-    const imageBase64 = Buffer.concat(chunks).toString('base64');
+    // 下載圖片（相容新版 LINE SDK）
+    const response = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
+      headers: { Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}` }
+    });
+    const arrayBuffer = await response.arrayBuffer();
+    const imageBase64 = Buffer.from(arrayBuffer).toString('base64');
+    const mimeType = response.headers.get('content-type') || 'image/jpeg';
 
     // 呼叫 Gemini Vision 辨識食物
     const geminiRes = await fetch(
@@ -75,15 +77,8 @@ async function handleImageMessage(event) {
         body: JSON.stringify({
           contents: [{
             parts: [
-              {
-                inline_data: {
-                  mime_type: 'image/jpeg',
-                  data: imageBase64,
-                }
-              },
-              {
-                text: '這張圖片裡有什麼食物？請用繁體中文列出食物名稱和估算總卡路里。格式：\n食物：XXX、XXX\n卡路里：XXX kcal\n只回傳這兩行，不要其他說明。'
-              }
+              { inline_data: { mime_type: mimeType, data: imageBase64 } },
+              { text: '這張圖片裡有什麼食物？請用繁體中文列出所有食物和估算的總卡路里。格式只能是這兩行：\n食物：XXX、XXX\n卡路里：數字\n不要其他任何說明或單位文字。' }
             ]
           }]
         }),
@@ -92,6 +87,7 @@ async function handleImageMessage(event) {
 
     const geminiData = await geminiRes.json();
     const aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    console.log('Gemini Vision 回應:', aiText);
 
     if (!aiText) {
       return replyText(event, '無法辨識圖片中的食物，請直接輸入文字記錄\n例：午餐 雞腿便當');
@@ -224,55 +220,81 @@ async function handleMessage(event) {
       foodName = rawInput;
     }
 
-    // 查資料庫
-    const { data: foods } = await supabase
-      .from('food_database')
-      .select('*')
-      .ilike('name', `%${foodName}%`)
-      .limit(1);
+    // 輔助函式：查單一食物卡路里
+    async function lookupCalories(name, g) {
+      const { data: foods } = await supabase
+        .from('food_database').select('*').ilike('name', `%${name}%`).limit(1);
+      if (foods && foods.length > 0) {
+        const cal = Math.round(foods[0].calories_per_100g * (g || 100) / 100);
+        return { cal, label: g ? `${foods[0].name} ${g}g→${cal}kcal` : `${foods[0].name} 100g→${cal}kcal` };
+      }
+      // AI 估算
+      const prompt = g
+        ? `台灣食物「${name}」${g}克的卡路里是多少？只回傳數字。`
+        : `台灣食物或飲料「${name}」一般份量的卡路里是多少？只回傳數字。`;
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+      });
+      const d = await r.json();
+      const num = parseInt((d.candidates?.[0]?.content?.parts?.[0]?.text || '').replace(/[^0-9]/g, ''));
+      if (num > 0 && num < 5000) {
+        return { cal: num, label: g ? `${name} ${g}g→${num}kcal(AI)` : `${name}→${num}kcal(AI)` };
+      }
+      return null;
+    }
 
     let calories, calNote;
 
     if (directCal) {
-      // 用戶直接指定卡路里
       calories = directCal;
-      calNote = `${directCal} kcal`;
-    } else if (foods && foods.length > 0) {
-      // 資料庫找到，換算卡路里
-      const food = foods[0];
-      const actualGrams = grams || 100;
-      calories = Math.round(food.calories_per_100g * actualGrams / 100);
-      calNote = grams
-        ? `${food.name} ${grams}g → ${calories} kcal`
-        : `${food.name} 100g → ${calories} kcal`;
-      foodName = food.name;
+      calNote = `${foodName} ${directCal} kcal`;
     } else {
-      // 資料庫找不到，呼叫 Claude AI 估算
-      try {
-        const aiPrompt = grams
-          ? `台灣食物「${foodName}」${grams}克的卡路里是多少？只回傳數字，不要任何說明、單位或文字。`
-          : `台灣常見食物或飲料「${foodName}」一般份量的卡路里是多少？例如飲料以一杯(約500ml)計算，食物以一份計算。只回傳數字，不要任何說明、單位或文字。`;
-
-        const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: aiPrompt }] }],
-          }),
-        });
-        const aiData = await aiRes.json();
-        const aiText = aiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-        const aiCal = parseInt(aiText.replace(/[^0-9]/g, ''));
-        if (aiCal && aiCal > 0 && aiCal < 5000) {
-          calories = aiCal;
-          calNote = grams
-            ? `${foodName} ${grams}g → ${calories} kcal (AI估算)`
-            : `${foodName} → ${calories} kcal (AI估算)`;
+      // 支援多食物：「紫米飯150克 雞胸100克 青菜50克」
+      // 嘗試拆解：用空格分割，每段解析出 食物名+克數
+      const segments = rawInput.split(/\s+/);
+      const items = [];
+      let i = 0;
+      while (i < segments.length) {
+        const seg = segments[i];
+        const m = seg.match(/^(.+?)(\d+)(克|g|公克)$/i);
+        if (m) {
+          items.push({ name: m[1], grams: parseInt(m[2]) });
+          i++;
+        } else if (i + 1 < segments.length) {
+          const next = segments[i + 1];
+          const m2 = next.match(/^(\d+)(克|g|公克)$/i);
+          if (m2) {
+            items.push({ name: seg, grams: parseInt(m2[1]) });
+            i += 2;
+          } else {
+            items.push({ name: seg, grams: null });
+            i++;
+          }
         } else {
+          items.push({ name: seg, grams: null });
+          i++;
+        }
+      }
+
+      if (items.length > 1) {
+        // 多食物模式
+        const results = await Promise.all(items.map(it => lookupCalories(it.name, it.grams)));
+        const valid = results.filter(Boolean);
+        if (valid.length === 0) {
+          return replyText(event, `找不到食物熱量資料\n請改用：${mealType} 食物名稱 [卡路里數字]`);
+        }
+        calories = valid.reduce((s, r) => s + r.cal, 0);
+        calNote = valid.map(r => r.label).join('\n') + `\n合計 ${calories} kcal`;
+        foodName = items.map(it => it.name).join('、');
+      } else {
+        // 單一食物
+        const result = await lookupCalories(foodName, grams);
+        if (!result) {
           return replyText(event, `找不到「${foodName}」的熱量資料\n請改用：${mealType} ${foodName} [卡路里數字]\n例：${mealType} ${foodName} 300`);
         }
-      } catch (e) {
-        return replyText(event, `找不到「${foodName}」的熱量資料\n請改用：${mealType} ${foodName} [卡路里數字]\n例：${mealType} ${foodName} 300`);
+        calories = result.cal;
+        calNote = result.label;
       }
     }
 
