@@ -69,27 +69,25 @@ async function handleImageMessage(event) {
     const mimeType = response.headers.get('content-type') || 'image/jpeg';
 
     // 呼叫 Gemini Vision 辨識食物
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { inline_data: { mime_type: mimeType, data: imageBase64 } },
-              { text: '這張圖片裡有什麼食物？請用繁體中文列出所有食物和估算的總卡路里。格式只能是這兩行：\n食物：XXX、XXX\n卡路里：數字\n不要其他任何說明或單位文字。' }
-            ]
-          }]
-        }),
-      }
-    );
+    const geminiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
+      body: JSON.stringify({
+        model: 'google/gemini-2.0-flash-exp:free',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageBase64}` } },
+            { type: 'text', text: '這張圖片裡有什麼食物？請用繁體中文列出所有食物和估算的總卡路里。格式只能是這兩行：\n食物：XXX、XXX\n卡路里：數字\n不要其他任何說明或單位文字。' }
+          ]
+        }]
+      }),
+    });
 
     const geminiData = await geminiRes.json();
-    console.log('Gemini Vision 完整回應:', JSON.stringify(geminiData).substring(0, 500));
-    const aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-    const blockReason = geminiData.promptFeedback?.blockReason || geminiData.candidates?.[0]?.finishReason || '';
-    console.log('Gemini Vision aiText:', aiText, 'blockReason:', blockReason);
+    console.log('Vision 完整回應:', JSON.stringify(geminiData).substring(0, 500));
+    const aiText = geminiData.choices?.[0]?.message?.content?.trim() || '';
+    console.log('Vision aiText:', aiText);
 
     if (!aiText) {
       const reason = blockReason ? `（${blockReason}）` : '';
@@ -235,12 +233,13 @@ async function handleMessage(event) {
       const prompt = g
         ? `台灣食物「${name}」${g}克的卡路里是多少？只回傳數字。`
         : `台灣食物或飲料「${name}」一般份量的卡路里是多少？只回傳數字。`;
-      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+      const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
+        body: JSON.stringify({ model: 'google/gemini-2.0-flash-exp:free', messages: [{ role: 'user', content: prompt }] }),
       });
       const d = await r.json();
-      const num = parseInt((d.candidates?.[0]?.content?.parts?.[0]?.text || '').replace(/[^0-9]/g, ''));
+      const num = parseInt((d.choices?.[0]?.message?.content || '').replace(/[^0-9]/g, ''));
       if (num > 0 && num < 5000) {
         return { cal: num, label: g ? `${name} ${g}g→${num}kcal(AI)` : `${name}→${num}kcal(AI)` };
       }
@@ -260,13 +259,13 @@ async function handleMessage(event) {
       if (hasMultiple || (!grams && !gramInNameMatch && rawInput.split(/\s+/).length > 2)) {
         // 多食物模式：交給 AI 直接算
         const multiPrompt = `以下是一餐的食物清單，請計算總卡路里：${rawInput}\n請列出每項食物的卡路里，最後一行輸出「合計：數字kcal」。用繁體中文回答，格式簡潔。`;
-        const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: [{ parts: [{ text: multiPrompt }] }] }),
+        const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
+          body: JSON.stringify({ model: 'google/gemini-2.0-flash-exp:free', messages: [{ role: 'user', content: multiPrompt }] }),
         });
         const aiData = await aiRes.json();
-        const aiText = aiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-        console.log('多食物 AI 完整回應:', JSON.stringify(aiData).substring(0, 300));
+        const aiText = aiData.choices?.[0]?.message?.content?.trim() || '';
         console.log('多食物 AI 回應:', aiText);
         const totalMatch = aiText.match(/合計[：:]\s*(\d+)/);
         if (totalMatch) {
