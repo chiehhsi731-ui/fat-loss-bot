@@ -59,7 +59,7 @@ async function handleMessage(event) {
 
   // 說明指令
   if (text === '說明' || text === 'help' || text === '?') {
-    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n\n🍱 飲食記錄\n早餐 雞胸飯 → 搜尋食物\n午餐 便當 500 → 直接記錄卡路里\n晚餐 地瓜 200 → 同上\n點心 水果 100 → 同上\n\n📈 查詢\n今日熱量 → 查看今日飲食\n我的進度 → 查看本週進度\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
+    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n\n🍱 飲食記錄\n早餐 雞胸飯 → 搜尋食物\n午餐 便當 500 → 直接記錄卡路里\n晚餐 地瓜 200 → 同上\n點心 水果 100 → 同上\n\n📈 查詢\n今日熱量 → 查看今日飲食\n我的進度 → 查看本週進度\n隊伍進度 → 查看隊友排行\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
   }
 
   // 體重記錄
@@ -138,8 +138,8 @@ async function handleMessage(event) {
       // 資料庫找不到，呼叫 Claude AI 估算
       try {
         const aiPrompt = grams
-          ? `${foodName} ${grams}克的卡路里是多少？只回傳數字，不要任何說明。`
-          : `${foodName} 一般份量（約100-200克）的卡路里是多少？只回傳數字，不要任何說明。`;
+          ? `台灣食物「${foodName}」${grams}克的卡路里是多少？只回傳數字，不要任何說明、單位或文字。`
+          : `台灣常見食物或飲料「${foodName}」一般份量的卡路里是多少？例如飲料以一杯(約500ml)計算，食物以一份計算。只回傳數字，不要任何說明、單位或文字。`;
 
         const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
           method: 'POST',
@@ -172,7 +172,33 @@ async function handleMessage(event) {
       calories,
     });
 
-    return replyText(event, `✅ ${mealType}已記錄\n${calNote}`);
+    // 查今日總卡路里
+    const today = new Date().toISOString().split('T')[0];
+    const { data: todayMeals } = await supabase
+      .from('meal_records')
+      .select('calories')
+      .eq('user_id', userId)
+      .gte('recorded_at', `${today}T00:00:00`);
+    const todayTotal = todayMeals ? todayMeals.reduce((s, r) => s + r.calories, 0) : calories;
+
+    // 查用戶目標熱量
+    const { data: memberData } = await supabase
+      .from('team_members')
+      .select('calorie_goal')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    const goal = memberData?.[0]?.calorie_goal || 1500;
+    const remaining = goal - todayTotal;
+
+    let summaryMsg;
+    if (remaining > 0) {
+      summaryMsg = `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n還剩 ${remaining} kcal 可以吃`;
+    } else {
+      summaryMsg = `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n⚠️ 已超標 ${Math.abs(remaining)} kcal`;
+    }
+
+    return replyText(event, `✅ ${mealType}已記錄\n${calNote}\n\n${summaryMsg}`);
   }
 
   // 今日熱量
@@ -210,6 +236,75 @@ async function handleMessage(event) {
     if (latest.weight) msg += `體重：${latest.weight} kg`;
     if (weightDiff) msg += `（${weightDiff > 0 ? '+' : ''}${weightDiff}）`;
     if (latest.body_fat) msg += `\n體脂：${latest.body_fat}%`;
+    return replyText(event, msg);
+  }
+
+  // 隊伍進度
+  if (text === '隊伍進度') {
+    // 找用戶所在隊伍
+    const { data: myTeam } = await supabase
+      .from('team_members')
+      .select('team_id')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!myTeam) return replyText(event, '你還沒有加入任何隊伍 👥\n請先建立或加入隊伍');
+
+    // 查隊伍所有成員
+    const { data: members } = await supabase
+      .from('team_members')
+      .select('user_id, streak')
+      .eq('team_id', myTeam.team_id);
+
+    if (!members || members.length === 0) return replyText(event, '隊伍沒有成員資料');
+
+    // 查每位成員最新體重體脂
+    const today = new Date().toISOString().split('T')[0];
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const memberIds = members.map(m => m.user_id);
+
+    const { data: bodyData } = await supabase
+      .from('body_records')
+      .select('user_id, weight, body_fat, recorded_at')
+      .in('user_id', memberIds)
+      .gte('recorded_at', weekAgo)
+      .order('recorded_at', { ascending: false });
+
+    const { data: userInfos } = await supabase
+      .from('users')
+      .select('id, display_name')
+      .in('id', memberIds);
+
+    // 每人只取最新一筆
+    const latestByUser = {};
+    for (const r of (bodyData || [])) {
+      if (!latestByUser[r.user_id]) latestByUser[r.user_id] = r;
+    }
+    const streakByUser = {};
+    for (const m of members) streakByUser[m.user_id] = m.streak || 0;
+    const nameByUser = {};
+    for (const u of (userInfos || [])) nameByUser[u.id] = u.display_name || '隊友';
+
+    // 排序：streak 高的在前
+    const sorted = memberIds.sort((a, b) => (streakByUser[b] || 0) - (streakByUser[a] || 0));
+
+    let msg = '👥 隊伍本週進度\n' + '─'.repeat(16) + '\n';
+    for (const uid of sorted) {
+      const name = nameByUser[uid] || '隊友';
+      const streak = streakByUser[uid] || 0;
+      const rec = latestByUser[uid];
+      const isMe = uid === userId ? '（我）' : '';
+      msg += `\n${name}${isMe} 🔥${streak}天\n`;
+      if (rec) {
+        if (rec.weight) msg += `  體重 ${rec.weight}kg`;
+        if (rec.body_fat) msg += `  體脂 ${rec.body_fat}%`;
+        msg += '\n';
+      } else {
+        msg += `  本週尚未記錄\n`;
+      }
+    }
     return replyText(event, msg);
   }
 }
@@ -291,19 +386,110 @@ async function setupRichMenu() {
   }
 }
 
+// 推播給所有用戶
+async function pushToAllUsers(buildMsg) {
+  const { data: users } = await supabase.from('users').select('id');
+  if (!users) return;
+  for (const user of users) {
+    try {
+      const msg = await buildMsg(user.id);
+      if (msg) await client.pushMessage({ to: user.id, messages: [{ type: 'text', text: msg }] });
+    } catch(e) { console.error('推播失敗:', user.id, e.message); }
+  }
+}
+
 // 每日早上8點提醒
 cron.schedule('0 8 * * *', async () => {
   console.log('早晨提醒推播');
+  const today = new Date().toISOString().split('T')[0];
+  await pushToAllUsers(async (uid) => {
+    const { data } = await supabase
+      .from('body_records').select('id').eq('user_id', uid)
+      .gte('recorded_at', `${today}T00:00:00`).limit(1);
+    if (data && data.length > 0) return null; // 已記錄就不打擾
+    return '早安！💪 記得記錄今天的體重和體脂\n輸入：體重 XX.X';
+  });
 }, { timezone: 'Asia/Taipei' });
 
 // 每日晚上9點提醒
 cron.schedule('0 21 * * *', async () => {
   console.log('晚間提醒推播');
+  const today = new Date().toISOString().split('T')[0];
+  await pushToAllUsers(async (uid) => {
+    const { data } = await supabase
+      .from('meal_records').select('calories').eq('user_id', uid)
+      .gte('recorded_at', `${today}T00:00:00`);
+    const total = data ? data.reduce((s, r) => s + r.calories, 0) : 0;
+    if (total === 0) return '晚上好！🌙 今天還沒有飲食記錄\n輸入：早餐/午餐/晚餐 + 食物名稱';
+    
+    const { data: memberData } = await supabase
+      .from('team_members').select('calorie_goal').eq('user_id', uid)
+      .order('created_at', { ascending: false }).limit(1);
+    const goal = memberData?.[0]?.calorie_goal || 1500;
+    const remaining = goal - total;
+    if (remaining > 0) {
+      return `🌙 今日飲食回顧\n已攝取 ${total} kcal，還剩 ${remaining} kcal\n繼續保持！💪`;
+    } else {
+      return `🌙 今日飲食回顧\n已攝取 ${total} kcal，超標 ${Math.abs(remaining)} kcal\n明天繼續加油！`;
+    }
+  });
 }, { timezone: 'Asia/Taipei' });
 
 // 每週一早上9點週報
 cron.schedule('0 9 * * 1', async () => {
   console.log('週報推播');
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  // 查所有隊伍
+  const { data: teams } = await supabase.from('teams').select('id, name');
+  if (!teams) return;
+
+  for (const team of teams) {
+    const { data: members } = await supabase
+      .from('team_members').select('user_id, streak').eq('team_id', team.id);
+    if (!members || members.length === 0) continue;
+
+    const memberIds = members.map(m => m.user_id);
+    const { data: userInfos } = await supabase
+      .from('users').select('id, display_name').in('id', memberIds);
+    const { data: bodyData } = await supabase
+      .from('body_records').select('user_id, weight, body_fat, recorded_at')
+      .in('user_id', memberIds).gte('recorded_at', weekAgo)
+      .order('recorded_at', { ascending: false });
+
+    const nameByUser = {};
+    for (const u of (userInfos || [])) nameByUser[u.id] = u.display_name || '隊友';
+    const streakByUser = {};
+    for (const m of members) streakByUser[m.user_id] = m.streak || 0;
+    const latestByUser = {};
+    for (const r of (bodyData || [])) {
+      if (!latestByUser[r.user_id]) latestByUser[r.user_id] = r;
+    }
+
+    // 以 streak 排名
+    const ranked = [...memberIds].sort((a, b) => (streakByUser[b] || 0) - (streakByUser[a] || 0));
+    const medals = ['🥇', '🥈', '🥉'];
+
+    let msg = `📊 ${team.name} 本週週報\n` + '═'.repeat(18) + '\n\n';
+    ranked.forEach((uid, i) => {
+      const medal = medals[i] || `${i + 1}.`;
+      const name = nameByUser[uid] || '隊友';
+      const streak = streakByUser[uid] || 0;
+      const rec = latestByUser[uid];
+      msg += `${medal} ${name}  🔥${streak}天\n`;
+      if (rec?.weight) msg += `   體重 ${rec.weight}kg`;
+      if (rec?.body_fat) msg += `  體脂 ${rec.body_fat}%`;
+      msg += '\n';
+    });
+    msg += '\n繼續加油！下週見 💪';
+
+    // 推播給所有隊員
+    for (const uid of memberIds) {
+      try {
+        await client.pushMessage({ to: uid, messages: [{ type: 'text', text: msg }] });
+      } catch(e) { console.error('週報推播失敗:', uid, e.message); }
+    }
+  }
 }, { timezone: 'Asia/Taipei' });
 
 const PORT = process.env.PORT || 3000;
