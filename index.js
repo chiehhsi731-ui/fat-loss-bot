@@ -141,21 +141,15 @@ async function handleMessage(event) {
           ? `${foodName} ${grams}克的卡路里是多少？只回傳數字，不要任何說明。`
           : `${foodName} 一般份量（約100-200克）的卡路里是多少？只回傳數字，不要任何說明。`;
 
-        const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+        const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            model: 'claude-haiku-4-5-20251001',
-            max_tokens: 50,
-            messages: [{ role: 'user', content: aiPrompt }],
+            contents: [{ parts: [{ text: aiPrompt }] }],
           }),
         });
         const aiData = await aiRes.json();
-        const aiText = aiData.content?.[0]?.text?.trim() || '';
+        const aiText = aiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
         const aiCal = parseInt(aiText.replace(/[^0-9]/g, ''));
         if (aiCal && aiCal > 0 && aiCal < 5000) {
           calories = aiCal;
