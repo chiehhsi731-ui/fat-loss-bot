@@ -124,8 +124,8 @@ async function handleImageMessage(event) {
     });
 
   } catch (e) {
-    console.error('圖片辨識失敗:', e);
-    return replyText(event, '圖片辨識失敗，請直接輸入文字記錄\n例：午餐 雞腿便當 650');
+    console.error('圖片辨識失敗:', e.message, e.stack);
+    return replyText(event, `圖片辨識失敗：${e.message}\n請直接輸入文字記錄\n例：午餐 雞腿便當 650`);
   }
 }
 
@@ -250,43 +250,28 @@ async function handleMessage(event) {
       calories = directCal;
       calNote = `${foodName} ${directCal} kcal`;
     } else {
-      // 支援多食物：「紫米飯150克 雞胸100克 青菜50克」
-      // 嘗試拆解：用空格分割，每段解析出 食物名+克數
-      const segments = rawInput.split(/\s+/);
-      const items = [];
-      let i = 0;
-      while (i < segments.length) {
-        const seg = segments[i];
-        const m = seg.match(/^(.+?)(\d+)(克|g|公克)$/i);
-        if (m) {
-          items.push({ name: m[1], grams: parseInt(m[2]) });
-          i++;
-        } else if (i + 1 < segments.length) {
-          const next = segments[i + 1];
-          const m2 = next.match(/^(\d+)(克|g|公克)$/i);
-          if (m2) {
-            items.push({ name: seg, grams: parseInt(m2[1]) });
-            i += 2;
-          } else {
-            items.push({ name: seg, grams: null });
-            i++;
-          }
-        } else {
-          items.push({ name: seg, grams: null });
-          i++;
-        }
-      }
+      // 判斷是否為多食物輸入（含有多個克數標記或空格分隔多項食物）
+      const hasMultiple = (rawInput.match(/(\d+)(克|g|公克)/gi) || []).length > 1 ||
+                          rawInput.includes('半顆') || rawInput.includes('半碗') || rawInput.includes('半份');
 
-      if (items.length > 1) {
-        // 多食物模式
-        const results = await Promise.all(items.map(it => lookupCalories(it.name, it.grams)));
-        const valid = results.filter(Boolean);
-        if (valid.length === 0) {
-          return replyText(event, `找不到食物熱量資料\n請改用：${mealType} 食物名稱 [卡路里數字]`);
+      if (hasMultiple || (!grams && !gramInNameMatch && rawInput.split(/\s+/).length > 2)) {
+        // 多食物模式：交給 AI 直接算
+        const multiPrompt = `以下是一餐的食物清單，請計算總卡路里：${rawInput}\n請列出每項食物的卡路里，最後一行輸出「合計：數字kcal」。用繁體中文回答，格式簡潔。`;
+        const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: multiPrompt }] }] }),
+        });
+        const aiData = await aiRes.json();
+        const aiText = aiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+        console.log('多食物 AI 回應:', aiText);
+        const totalMatch = aiText.match(/合計[：:]\s*(\d+)/);
+        if (totalMatch) {
+          calories = parseInt(totalMatch[1]);
+          calNote = aiText.replace(/合計[：:]\s*\d+kcal/g, '').trim() + `\n合計 ${calories} kcal`;
+          foodName = rawInput;
+        } else {
+          return replyText(event, `無法計算卡路里\n請改用：${mealType} 食物名稱 [卡路里數字]`);
         }
-        calories = valid.reduce((s, r) => s + r.cal, 0);
-        calNote = valid.map(r => r.label).join('\n') + `\n合計 ${calories} kcal`;
-        foodName = items.map(it => it.name).join('、');
       } else {
         // 單一食物
         const result = await lookupCalories(foodName, grams);
