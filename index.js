@@ -175,7 +175,7 @@ async function handleMessage(event) {
 
   // 說明指令
   if (text === '說明' || text === 'help' || text === '?') {
-    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n\n🍱 飲食記錄\n早餐 雞胸飯 → 搜尋食物\n午餐 便當 500 → 直接記錄卡路里\n晚餐 地瓜 200 → 同上\n點心 水果 100 → 同上\n\n📈 查詢\n今日熱量 → 查看今日飲食\n我的進度 → 查看本週進度\n隊伍進度 → 查看隊友排行\n\n⚙️ 設定\n設定熱量目標 → 設定每日卡路里\n退出隊伍 → 離開目前隊伍\n刪除早餐/午餐/晚餐/點心 → 刪除今日最新\n刪除體重/體脂/飲水 → 刪除今日最新\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
+    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n\n🍱 飲食記錄\n早餐 雞胸飯 → 搜尋食物\n午餐 便當 500 → 直接記錄卡路里\n晚餐 地瓜 200 → 同上\n點心 水果 100 → 同上\n\n📈 查詢\n今日熱量 → 查看今日飲食\n我的進度 → 查看本週進度\n隊伍進度 → 查看隊友排行\n\n⚙️ 設定\n設定熱量目標 → 設定每日卡路里\n邀請好友 → 產生邀請訊息\\n加入 邀請碼 → 加入隊伍\\n退出隊伍 → 離開目前隊伍\n刪除早餐/午餐/晚餐/點心 → 刪除今日最新\n刪除體重/體脂/飲水 → 刪除今日最新\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
   }
 
   // 體重記錄
@@ -469,6 +469,18 @@ async function handleMessage(event) {
     return replyText(event, `✅ 每日熱量目標設為 ${kcal} kcal\n\n現在可以開始記錄飲食了！\n傳送「說明」查看所有指令`);
   }
 
+  // 邀請好友
+  if (text === '邀請好友') {
+    const { data: myTeam } = await supabase
+      .from('team_members').select('team_id, teams(name, invite_code)')
+      .eq('user_id', userId).not('team_id', 'is', null)
+      .order('joined_at', { ascending: false }).limit(1).maybeSingle();
+    if (!myTeam?.teams) return replyText(event, '你還沒有加入任何隊伍\n請先建立或加入隊伍');
+    const { name, invite_code } = myTeam.teams;
+    const msg = `🏋️ 邀請你加入「${name}」減脂挑戰！\n\n加入方式：\n1️⃣ 加這個 Bot：https://line.me/R/ti/p/@254dtuqa\n2️⃣ 傳送指令：加入 ${invite_code}\n\n或直接開啟 APP：\nhttps://liff.line.me/2010377807-QvlNPosn\n\n一起加油！💪`;
+    return replyText(event, msg);
+  }
+
   // 退出隊伍
   if (text === '退出隊伍') {
     const { data: myTeam } = await supabase
@@ -531,6 +543,34 @@ async function handleMessage(event) {
 
   if (text === '取消') {
     return replyText(event, '已取消 👌');
+  }
+
+  // 加入隊伍（Bot 指令：加入 7556d6ff）
+  const joinMatch = text.match(/^加入\s+([a-f0-9]{8})$/i);
+  if (joinMatch) {
+    const code = joinMatch[1].toLowerCase();
+    const { data: team } = await supabase.from('teams').select('*').eq('invite_code', code).maybeSingle();
+    if (!team) return replyText(event, `找不到邀請碼「${code}」\n請確認邀請碼是否正確`);
+
+    // 檢查是否已加入
+    const { data: existing } = await supabase.from('team_members')
+      .select('id').eq('team_id', team.id).eq('user_id', userId).maybeSingle();
+    if (existing) return replyText(event, `你已經是「${team.name}」的成員了！`);
+
+    await supabase.from('team_members').insert({ team_id: team.id, user_id: userId });
+
+    // 通知其他隊員
+    const { data: members } = await supabase.from('team_members').select('user_id').eq('team_id', team.id);
+    const { data: userInfo } = await supabase.from('users').select('display_name').eq('id', userId).maybeSingle();
+    const name = userInfo?.display_name || '新成員';
+    for (const m of (members || [])) {
+      if (m.user_id !== userId) {
+        try {
+          await client.pushMessage({ to: m.user_id, messages: [{ type: 'text', text: `🎉 ${name} 加入了「${team.name}」！` }] });
+        } catch(e) {}
+      }
+    }
+    return replyText(event, `✅ 成功加入「${team.name}」！\n\n輸入「隊伍進度」查看隊友狀況\n一起加油 💪`);
   }
 }
 
