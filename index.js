@@ -52,7 +52,8 @@ async function handleFollow(event) {
 
 async function handleMessage(event) {
   const userId = event.source.userId;
-  const text = event.message.text.trim();
+  // 正規化：全形空格→半形、多空格→單一空格
+  const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
   await supabase.from('users').upsert({ id: userId });
 
@@ -86,39 +87,98 @@ async function handleMessage(event) {
     return replyText(event, `✅ 飲水已記錄：${water} ml 💧`);
   }
 
-  // 手動卡路里記錄（早餐 食物 500）
-  const mealMatch = text.match(/^(早餐|午餐|晚餐|點心)\s+(.+)\s+(\d+)$/);
-  if (mealMatch) {
-    const [, mealType, foodName, calories] = mealMatch;
+  // 飲食記錄：AI 自動判斷卡路里
+  // 支援格式：早餐 雞胸肉、早餐 雞胸肉150克、早餐 雞胸肉 150g、早餐 便當 500
+  const mealStartMatch = text.match(/^(早餐|午餐|晚餐|點心)\s+(.+)$/);
+  if (mealStartMatch) {
+    const mealType = mealStartMatch[1];
+    const rawInput = mealStartMatch[2].trim();
+
+    // 解析食物名稱與份量/克數
+    // 格式1：食物名稱 + 數字（卡路里直接指定，如「便當 500」）
+    const directCalMatch = rawInput.match(/^(.+?)\s+(\d+)\s*(?:kcal|卡)?$/);
+    // 格式2：食物名稱內含克數（如「雞胸肉150克」「雞胸肉 150g」）
+    const gramInNameMatch = rawInput.match(/^(.+?)\s*(\d+)\s*(?:克|g|公克)$/i);
+
+    let foodName, grams, directCal;
+
+    if (gramInNameMatch) {
+      foodName = gramInNameMatch[1].trim();
+      grams = parseInt(gramInNameMatch[2]);
+    } else if (directCalMatch) {
+      foodName = directCalMatch[1].trim();
+      directCal = parseInt(directCalMatch[2]);
+    } else {
+      foodName = rawInput;
+    }
+
+    // 查資料庫
+    const { data: foods } = await supabase
+      .from('food_database')
+      .select('*')
+      .ilike('name', `%${foodName}%`)
+      .limit(1);
+
+    let calories, calNote;
+
+    if (directCal) {
+      // 用戶直接指定卡路里
+      calories = directCal;
+      calNote = `${directCal} kcal`;
+    } else if (foods && foods.length > 0) {
+      // 資料庫找到，換算卡路里
+      const food = foods[0];
+      const actualGrams = grams || 100;
+      calories = Math.round(food.calories_per_100g * actualGrams / 100);
+      calNote = grams
+        ? `${food.name} ${grams}g → ${calories} kcal`
+        : `${food.name} 100g → ${calories} kcal`;
+      foodName = food.name;
+    } else {
+      // 資料庫找不到，呼叫 Claude AI 估算
+      try {
+        const aiPrompt = grams
+          ? `${foodName} ${grams}克的卡路里是多少？只回傳數字，不要任何說明。`
+          : `${foodName} 一般份量（約100-200克）的卡路里是多少？只回傳數字，不要任何說明。`;
+
+        const aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+          },
+          body: JSON.stringify({
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 50,
+            messages: [{ role: 'user', content: aiPrompt }],
+          }),
+        });
+        const aiData = await aiRes.json();
+        const aiText = aiData.content?.[0]?.text?.trim() || '';
+        const aiCal = parseInt(aiText.replace(/[^0-9]/g, ''));
+        if (aiCal && aiCal > 0 && aiCal < 5000) {
+          calories = aiCal;
+          calNote = grams
+            ? `${foodName} ${grams}g → ${calories} kcal (AI估算)`
+            : `${foodName} → ${calories} kcal (AI估算)`;
+        } else {
+          return replyText(event, `找不到「${foodName}」的熱量資料\n請改用：${mealType} ${foodName} [卡路里數字]\n例：${mealType} ${foodName} 300`);
+        }
+      } catch (e) {
+        return replyText(event, `找不到「${foodName}」的熱量資料\n請改用：${mealType} ${foodName} [卡路里數字]\n例：${mealType} ${foodName} 300`);
+      }
+    }
+
     await supabase.from('meal_records').insert({
       user_id: userId,
       team_id: null,
       meal_type: mealType,
       food_name: foodName,
-      calories: parseInt(calories),
+      calories,
     });
-    return replyText(event, `✅ ${mealType}已記錄：${foodName} ${calories} kcal`);
-  }
 
-  // 飲食搜尋（早餐 雞胸飯）
-  if (text.startsWith('早餐') || text.startsWith('午餐') || text.startsWith('晚餐') || text.startsWith('點心')) {
-    const parts = text.split(' ');
-    const mealType = parts[0];
-    const foodName = parts.slice(1).join(' ');
-    if (!foodName) return replyText(event, `格式：${mealType} 食物名稱\n例：${mealType} 雞胸飯`);
-
-    const { data: foods } = await supabase
-      .from('food_database')
-      .select('*')
-      .ilike('name', `%${foodName}%`)
-      .limit(3);
-
-    if (!foods || foods.length === 0) {
-      return replyText(event, `找不到「${foodName}」\n請直接輸入卡路里：\n${mealType} ${foodName} 500`);
-    }
-
-    const foodList = foods.map((f, i) => `${i + 1}. ${f.name} ${f.calories_per_100g}kcal/100g`).join('\n');
-    return replyText(event, `🔍 搜尋結果：\n${foodList}\n\n直接輸入記錄：\n${mealType} ${foodName} 卡路里數字`);
+    return replyText(event, `✅ ${mealType}已記錄\n${calNote}`);
   }
 
   // 今日熱量
