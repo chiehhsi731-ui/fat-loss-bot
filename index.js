@@ -45,7 +45,7 @@ async function handleFollow(event) {
     replyToken: event.replyToken,
     messages: [{
       type: 'text',
-      text: `歡迎加入減脂挑戰！🏋️\n\n📋 指令說明：\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n早餐 雞胸飯 → 搜尋食物\n今日熱量 → 查看今日攝取\n我的進度 → 查看本週進度\n\n開啟 APP 建立你的挑戰隊伍！`,
+      text: `歡迎加入減脂挑戰！🏋️\n\n傳送「說明」查看所有指令\n或點下方選單開啟 APP 開始挑戰！`,
     }],
   });
 }
@@ -53,10 +53,13 @@ async function handleFollow(event) {
 async function handleMessage(event) {
   const userId = event.source.userId;
   const text = event.message.text.trim();
-  const groupId = event.source.groupId || null;
 
-  // 確保使用者存在
   await supabase.from('users').upsert({ id: userId });
+
+  // 說明指令
+  if (text === '說明' || text === 'help' || text === '?') {
+    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n\n🍱 飲食記錄\n早餐 雞胸飯 → 搜尋食物\n午餐 便當 500 → 直接記錄卡路里\n晚餐 地瓜 200 → 同上\n點心 水果 100 → 同上\n\n📈 查詢\n今日熱量 → 查看今日飲食\n我的進度 → 查看本週進度\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
+  }
 
   // 體重記錄
   if (text.startsWith('體重')) {
@@ -83,27 +86,6 @@ async function handleMessage(event) {
     return replyText(event, `✅ 飲水已記錄：${water} ml 💧`);
   }
 
-  // 飲食搜尋
-  if (text.startsWith('早餐') || text.startsWith('午餐') || text.startsWith('晚餐') || text.startsWith('點心')) {
-    const parts = text.split(' ');
-    const mealType = parts[0];
-    const foodName = parts.slice(1).join(' ');
-    if (!foodName) return replyText(event, `格式：${mealType} 食物名稱\n例：${mealType} 雞胸飯`);
-    
-    const { data: foods } = await supabase
-      .from('food_database')
-      .select('*')
-      .ilike('name', `%${foodName}%`)
-      .limit(3);
-
-    if (!foods || foods.length === 0) {
-      return replyText(event, `找不到「${foodName}」\n請直接輸入卡路里：\n${mealType} ${foodName} 500`);
-    }
-
-    const foodList = foods.map((f, i) => `${i + 1}. ${f.name} ${f.calories_per_100g}kcal/100g`).join('\n');
-    return replyText(event, `🔍 搜尋結果：\n${foodList}\n\n回覆編號選擇，或直接輸入：\n${mealType} ${foodName} 卡路里數字`);
-  }
-
   // 手動卡路里記錄（早餐 食物 500）
   const mealMatch = text.match(/^(早餐|午餐|晚餐|點心)\s+(.+)\s+(\d+)$/);
   if (mealMatch) {
@@ -116,6 +98,27 @@ async function handleMessage(event) {
       calories: parseInt(calories),
     });
     return replyText(event, `✅ ${mealType}已記錄：${foodName} ${calories} kcal`);
+  }
+
+  // 飲食搜尋（早餐 雞胸飯）
+  if (text.startsWith('早餐') || text.startsWith('午餐') || text.startsWith('晚餐') || text.startsWith('點心')) {
+    const parts = text.split(' ');
+    const mealType = parts[0];
+    const foodName = parts.slice(1).join(' ');
+    if (!foodName) return replyText(event, `格式：${mealType} 食物名稱\n例：${mealType} 雞胸飯`);
+
+    const { data: foods } = await supabase
+      .from('food_database')
+      .select('*')
+      .ilike('name', `%${foodName}%`)
+      .limit(3);
+
+    if (!foods || foods.length === 0) {
+      return replyText(event, `找不到「${foodName}」\n請直接輸入卡路里：\n${mealType} ${foodName} 500`);
+    }
+
+    const foodList = foods.map((f, i) => `${i + 1}. ${f.name} ${f.calories_per_100g}kcal/100g`).join('\n');
+    return replyText(event, `🔍 搜尋結果：\n${foodList}\n\n直接輸入記錄：\n${mealType} ${foodName} 卡路里數字`);
   }
 
   // 今日熱量
@@ -172,7 +175,7 @@ async function updateStreak(userId) {
     .select('streak')
     .eq('user_id', userId)
     .limit(1)
-    .single();
+    .maybeSingle();
 
   if (member) {
     const newStreak = data && data.length > 0 ? (member.streak || 0) + 1 : 1;
@@ -185,6 +188,53 @@ function replyText(event, text) {
     replyToken: event.replyToken,
     messages: [{ type: 'text', text }],
   });
+}
+
+// 建立 Rich Menu
+async function setupRichMenu() {
+  try {
+    try { await client.deleteDefaultRichMenu(); } catch(e) {}
+
+    const richMenu = await client.createRichMenu({
+      size: { width: 2500, height: 843 },
+      selected: true,
+      name: 'fat-loss-menu',
+      chatBarText: '📋 功能選單',
+      areas: [
+        {
+          bounds: { x: 0, y: 0, width: 833, height: 843 },
+          action: {
+            type: 'uri',
+            label: '開啟APP',
+            uri: 'https://liff.line.me/2010377807-QvlNPosn'
+          }
+        },
+        {
+          bounds: { x: 833, y: 0, width: 834, height: 843 },
+          action: {
+            type: 'message',
+            label: '說明',
+            text: '說明'
+          }
+        },
+        {
+          bounds: { x: 1667, y: 0, width: 833, height: 843 },
+          action: {
+            type: 'message',
+            label: '今日熱量',
+            text: '今日熱量'
+          }
+        }
+      ]
+    });
+
+    console.log('Rich Menu ID:', richMenu.richMenuId);
+    await client.setDefaultRichMenu(richMenu.richMenuId);
+    console.log('Rich Menu 設定完成！');
+    return richMenu.richMenuId;
+  } catch (error) {
+    console.error('Rich Menu 建立失敗:', error);
+  }
 }
 
 // 每日早上8點提醒
@@ -203,4 +253,7 @@ cron.schedule('0 9 * * 1', async () => {
 }, { timezone: 'Asia/Taipei' });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  setupRichMenu();
+});
