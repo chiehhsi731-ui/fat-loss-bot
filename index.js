@@ -375,7 +375,8 @@ async function handleMessage(event) {
       .from('team_members')
       .select('team_id')
       .eq('user_id', userId)
-      .order('created_at', { ascending: false })
+      .not('team_id', 'is', null)
+      .order('joined_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
@@ -485,7 +486,7 @@ async function handleMessage(event) {
   if (text === '退出隊伍') {
     const { data: myTeam } = await supabase
       .from('team_members').select('team_id, teams(name)')
-      .eq('user_id', userId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+      .eq('user_id', userId).not('team_id', 'is', null).order('joined_at', { ascending: false }).limit(1).maybeSingle();
     if (!myTeam) return replyText(event, '你目前沒有加入任何隊伍');
     return client.replyMessage({
       replyToken: event.replyToken,
@@ -505,7 +506,7 @@ async function handleMessage(event) {
   if (text === '確定退出隊伍') {
     const { data: myTeam } = await supabase
       .from('team_members').select('id, team_id, teams(name)')
-      .eq('user_id', userId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+      .eq('user_id', userId).not('team_id', 'is', null).order('joined_at', { ascending: false }).limit(1).maybeSingle();
     if (!myTeam) return replyText(event, '你目前沒有加入任何隊伍');
     await supabase.from('team_members').delete().eq('id', myTeam.id);
     return replyText(event, `✅ 已退出「${myTeam.teams?.name || '隊伍'}」\n掰掰！繼續加油 💪`);
