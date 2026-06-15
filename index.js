@@ -90,8 +90,7 @@ async function handleImageMessage(event) {
     console.log('Vision aiText:', aiText);
 
     if (!aiText) {
-      const reason = blockReason ? `（${blockReason}）` : '';
-      return replyText(event, `無法辨識圖片${reason}\n請直接輸入文字記錄\n例：午餐 雞腿便當`);
+      return replyText(event, '無法辨識圖片\n請直接輸入文字記錄\n例：午餐 雞腿便當');
     }
 
     // 解析卡路里
@@ -258,7 +257,7 @@ async function handleMessage(event) {
 
       if (hasMultiple || (!grams && !gramInNameMatch && rawInput.split(/\s+/).length > 2)) {
         // 多食物模式：交給 AI 直接算
-        const multiPrompt = `以下是一餐的食物清單，請計算總卡路里：${rawInput}\n請列出每項食物的卡路里，最後一行輸出「合計：數字kcal」。用繁體中文回答，格式簡潔。`;
+        const multiPrompt = `以下是一餐的食物清單，請計算每項食物的卡路里後加總。\n食物：${rawInput}\n\n請用以下格式回答（每行一項）：\n食物名 份量 → 卡路里kcal\n...\n合計：總卡路里kcal\n\n注意：最後一行必須是「合計：數字kcal」格式。`;
         const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
