@@ -47,7 +47,15 @@ async function handleFollow(event) {
     replyToken: event.replyToken,
     messages: [{
       type: 'text',
-      text: `歡迎加入減脂挑戰！🏋️\n\n傳送「說明」查看所有指令\n或點下方選單開啟 APP 開始挑戰！`,
+      text: `歡迎加入減脂挑戰！🏋️\n\n先來設定你的目標吧 👇`,
+      quickReply: {
+        items: [
+          { type: 'action', action: { type: 'message', label: '減脂 1200kcal/天', text: '設定熱量目標 1200' } },
+          { type: 'action', action: { type: 'message', label: '輕鬆 1500kcal/天', text: '設定熱量目標 1500' } },
+          { type: 'action', action: { type: 'message', label: '維持 1800kcal/天', text: '設定熱量目標 1800' } },
+          { type: 'action', action: { type: 'message', label: '自訂目標', text: '設定熱量目標' } },
+        ]
+      }
     }],
   });
 }
@@ -167,7 +175,7 @@ async function handleMessage(event) {
 
   // 說明指令
   if (text === '說明' || text === 'help' || text === '?') {
-    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n\n🍱 飲食記錄\n早餐 雞胸飯 → 搜尋食物\n午餐 便當 500 → 直接記錄卡路里\n晚餐 地瓜 200 → 同上\n點心 水果 100 → 同上\n\n📈 查詢\n今日熱量 → 查看今日飲食\n我的進度 → 查看本週進度\n隊伍進度 → 查看隊友排行\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
+    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n\n🍱 飲食記錄\n早餐 雞胸飯 → 搜尋食物\n午餐 便當 500 → 直接記錄卡路里\n晚餐 地瓜 200 → 同上\n點心 水果 100 → 同上\n\n📈 查詢\n今日熱量 → 查看今日飲食\n我的進度 → 查看本週進度\n隊伍進度 → 查看隊友排行\n\n⚙️ 設定\n設定熱量目標 → 設定每日卡路里\n退出隊伍 → 離開目前隊伍\n刪除早餐/午餐/晚餐/點心 → 刪除今日最新\n刪除體重/體脂/飲水 → 刪除今日最新\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
   }
 
   // 體重記錄
@@ -427,6 +435,102 @@ async function handleMessage(event) {
       }
     }
     return replyText(event, msg);
+  }
+
+  // 設定熱量目標
+  const goalMatch = text.match(/^設定熱量目標\s*(\d+)?$/);
+  if (goalMatch) {
+    const kcal = goalMatch[1] ? parseInt(goalMatch[1]) : null;
+    if (!kcal) {
+      return client.replyMessage({
+        replyToken: event.replyToken,
+        messages: [{
+          type: 'text',
+          text: '請選擇你的每日熱量目標：',
+          quickReply: {
+            items: [
+              { type: 'action', action: { type: 'message', label: '1200 kcal（積極減脂）', text: '設定熱量目標 1200' } },
+              { type: 'action', action: { type: 'message', label: '1500 kcal（穩定減脂）', text: '設定熱量目標 1500' } },
+              { type: 'action', action: { type: 'message', label: '1800 kcal（輕鬆維持）', text: '設定熱量目標 1800' } },
+              { type: 'action', action: { type: 'message', label: '2000 kcal（緩慢調整）', text: '設定熱量目標 2000' } },
+            ]
+          }
+        }]
+      });
+    }
+    // 更新或建立 team_members 記錄
+    const { data: existing } = await supabase
+      .from('team_members').select('id').eq('user_id', userId).limit(1);
+    if (existing && existing.length > 0) {
+      await supabase.from('team_members').update({ calorie_goal: kcal }).eq('user_id', userId);
+    } else {
+      await supabase.from('team_members').insert({ user_id: userId, calorie_goal: kcal });
+    }
+    return replyText(event, `✅ 每日熱量目標設為 ${kcal} kcal\n\n現在可以開始記錄飲食了！\n傳送「說明」查看所有指令`);
+  }
+
+  // 退出隊伍
+  if (text === '退出隊伍') {
+    const { data: myTeam } = await supabase
+      .from('team_members').select('team_id, teams(name)')
+      .eq('user_id', userId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (!myTeam) return replyText(event, '你目前沒有加入任何隊伍');
+    return client.replyMessage({
+      replyToken: event.replyToken,
+      messages: [{
+        type: 'text',
+        text: `確定要退出「${myTeam.teams?.name || '隊伍'}」嗎？`,
+        quickReply: {
+          items: [
+            { type: 'action', action: { type: 'message', label: '✅ 確定退出', text: '確定退出隊伍' } },
+            { type: 'action', action: { type: 'message', label: '❌ 取消', text: '取消' } },
+          ]
+        }
+      }]
+    });
+  }
+
+  if (text === '確定退出隊伍') {
+    const { data: myTeam } = await supabase
+      .from('team_members').select('id, team_id, teams(name)')
+      .eq('user_id', userId).order('created_at', { ascending: false }).limit(1).maybeSingle();
+    if (!myTeam) return replyText(event, '你目前沒有加入任何隊伍');
+    await supabase.from('team_members').delete().eq('id', myTeam.id);
+    return replyText(event, `✅ 已退出「${myTeam.teams?.name || '隊伍'}」\n掰掰！繼續加油 💪`);
+  }
+
+  // 刪除最新記錄
+  const deleteMatch = text.match(/^刪除(早餐|午餐|晚餐|點心|體重|體脂|飲水)$/);
+  if (deleteMatch) {
+    const type = deleteMatch[1];
+    const isMeal = ['早餐', '午餐', '晚餐', '點心'].includes(type);
+    const isBody = ['體重', '體脂', '飲水'].includes(type);
+    const today = new Date().toISOString().split('T')[0];
+
+    if (isMeal) {
+      const { data } = await supabase.from('meal_records').select('id, food_name, calories')
+        .eq('user_id', userId).eq('meal_type', type)
+        .gte('recorded_at', `${today}T00:00:00`)
+        .order('recorded_at', { ascending: false }).limit(1);
+      if (!data || data.length === 0) return replyText(event, `今天沒有${type}記錄`);
+      await supabase.from('meal_records').delete().eq('id', data[0].id);
+      return replyText(event, `🗑️ 已刪除${type}：${data[0].food_name} ${data[0].calories} kcal`);
+    }
+
+    if (isBody) {
+      const colMap = { 體重: 'weight', 體脂: 'body_fat', 飲水: 'water_ml' };
+      const { data } = await supabase.from('body_records').select('id, weight, body_fat, water_ml')
+        .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`)
+        .order('recorded_at', { ascending: false }).limit(1);
+      if (!data || data.length === 0) return replyText(event, `今天沒有${type}記錄`);
+      await supabase.from('body_records').delete().eq('id', data[0].id);
+      const val = data[0][colMap[type]];
+      return replyText(event, `🗑️ 已刪除${type}記錄：${val}`);
+    }
+  }
+
+  if (text === '取消') {
+    return replyText(event, '已取消 👌');
   }
 }
 
