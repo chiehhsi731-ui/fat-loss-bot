@@ -86,11 +86,14 @@ async function handleImageMessage(event) {
     );
 
     const geminiData = await geminiRes.json();
+    console.log('Gemini Vision 完整回應:', JSON.stringify(geminiData).substring(0, 500));
     const aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
-    console.log('Gemini Vision 回應:', aiText);
+    const blockReason = geminiData.promptFeedback?.blockReason || geminiData.candidates?.[0]?.finishReason || '';
+    console.log('Gemini Vision aiText:', aiText, 'blockReason:', blockReason);
 
     if (!aiText) {
-      return replyText(event, '無法辨識圖片中的食物，請直接輸入文字記錄\n例：午餐 雞腿便當');
+      const reason = blockReason ? `（${blockReason}）` : '';
+      return replyText(event, `無法辨識圖片${reason}\n請直接輸入文字記錄\n例：午餐 雞腿便當`);
     }
 
     // 解析卡路里
@@ -263,6 +266,7 @@ async function handleMessage(event) {
         });
         const aiData = await aiRes.json();
         const aiText = aiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+        console.log('多食物 AI 完整回應:', JSON.stringify(aiData).substring(0, 300));
         console.log('多食物 AI 回應:', aiText);
         const totalMatch = aiText.match(/合計[：:]\s*(\d+)/);
         if (totalMatch) {
