@@ -27,6 +27,8 @@ app.post('/webhook', async (req, res) => {
   for (const event of events) {
     if (event.type === 'message' && event.message.type === 'text') {
       await handleMessage(event);
+    } else if (event.type === 'message' && event.message.type === 'image') {
+      await handleImageMessage(event);
     } else if (event.type === 'follow') {
       await handleFollow(event);
     }
@@ -50,10 +52,120 @@ async function handleFollow(event) {
   });
 }
 
+// 暫存用戶等待選餐別的狀態
+const pendingImageMeal = {};
+
+async function handleImageMessage(event) {
+  const userId = event.source.userId;
+  const messageId = event.message.id;
+
+  try {
+    // 下載圖片
+    const stream = await client.getMessageContent(messageId);
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    const imageBase64 = Buffer.concat(chunks).toString('base64');
+
+    // 呼叫 Gemini Vision 辨識食物
+    const geminiRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              {
+                inline_data: {
+                  mime_type: 'image/jpeg',
+                  data: imageBase64,
+                }
+              },
+              {
+                text: '這張圖片裡有什麼食物？請用繁體中文列出食物名稱和估算總卡路里。格式：\n食物：XXX、XXX\n卡路里：XXX kcal\n只回傳這兩行，不要其他說明。'
+              }
+            ]
+          }]
+        }),
+      }
+    );
+
+    const geminiData = await geminiRes.json();
+    const aiText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+
+    if (!aiText) {
+      return replyText(event, '無法辨識圖片中的食物，請直接輸入文字記錄\n例：午餐 雞腿便當');
+    }
+
+    // 解析卡路里
+    const calMatch = aiText.match(/卡路里[：:]\s*(\d+)/);
+    const estimatedCal = calMatch ? parseInt(calMatch[1]) : null;
+    const foodMatch = aiText.match(/食物[：:]\s*(.+)/);
+    const foodDesc = foodMatch ? foodMatch[1].trim() : '食物';
+
+    if (!estimatedCal) {
+      return replyText(event, `辨識結果：\n${aiText}\n\n請手動記錄：\n午餐 食物名稱 卡路里`);
+    }
+
+    // 暫存辨識結果，等用戶選餐別
+    pendingImageMeal[userId] = { foodDesc, estimatedCal, expiry: Date.now() + 60000 };
+
+    // 用 Quick Reply 讓用戶選餐別
+    return client.replyMessage({
+      replyToken: event.replyToken,
+      messages: [{
+        type: 'text',
+        text: `🔍 辨識結果：\n${foodDesc}\n估算：${estimatedCal} kcal\n\n這是哪一餐？`,
+        quickReply: {
+          items: [
+            { type: 'action', action: { type: 'message', label: '🌅 早餐', text: '記錄圖片 早餐' } },
+            { type: 'action', action: { type: 'message', label: '☀️ 午餐', text: '記錄圖片 午餐' } },
+            { type: 'action', action: { type: 'message', label: '🌙 晚餐', text: '記錄圖片 晚餐' } },
+            { type: 'action', action: { type: 'message', label: '🍎 點心', text: '記錄圖片 點心' } },
+          ]
+        }
+      }]
+    });
+
+  } catch (e) {
+    console.error('圖片辨識失敗:', e);
+    return replyText(event, '圖片辨識失敗，請直接輸入文字記錄\n例：午餐 雞腿便當 650');
+  }
+}
+
 async function handleMessage(event) {
   const userId = event.source.userId;
   // 正規化：全形空格→半形、多空格→單一空格
   const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
+
+
+  // 處理圖片辨識後選餐別
+  const imgMealMatch = text.match(/^記錄圖片\s*(早餐|午餐|晚餐|點心)$/);
+  if (imgMealMatch) {
+    const mealType = imgMealMatch[1];
+    const pending = pendingImageMeal[userId];
+    if (!pending || Date.now() > pending.expiry) {
+      return replyText(event, '辨識結果已過期，請重新傳送食物照片');
+    }
+    delete pendingImageMeal[userId];
+    const { foodDesc, estimatedCal } = pending;
+    await supabase.from('meal_records').insert({
+      user_id: userId, team_id: null, meal_type: mealType,
+      food_name: foodDesc, calories: estimatedCal,
+    });
+    const today = new Date().toISOString().split('T')[0];
+    const { data: todayMeals } = await supabase.from('meal_records').select('calories')
+      .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`);
+    const todayTotal = todayMeals ? todayMeals.reduce((s, r) => s + r.calories, 0) : estimatedCal;
+    const { data: memberData } = await supabase.from('team_members').select('calorie_goal')
+      .eq('user_id', userId).order('created_at', { ascending: false }).limit(1);
+    const goal = memberData?.[0]?.calorie_goal || 1500;
+    const remaining = goal - todayTotal;
+    const summaryMsg = remaining > 0
+      ? `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n還剩 ${remaining} kcal 可以吃`
+      : `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n⚠️ 已超標 ${Math.abs(remaining)} kcal`;
+    return replyText(event, `✅ ${mealType}已記錄\n${foodDesc} → ${estimatedCal} kcal\n\n${summaryMsg}`);
+  }
 
   await supabase.from('users').upsert({ id: userId });
 
