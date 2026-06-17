@@ -228,18 +228,11 @@ async function handleMessage(event) {
       foodName = rawInput;
     }
 
-    // 輔助函式：查單一食物卡路里
+    // 輔助函式：直接用 AI 估算單一食物卡路里
     async function lookupCalories(name, g) {
-      const { data: foods } = await supabase
-        .from('food_database').select('*').ilike('name', `%${name}%`).limit(1);
-      if (foods && foods.length > 0) {
-        const cal = Math.round(foods[0].calories_per_100g * (g || 100) / 100);
-        return { cal, label: g ? `${foods[0].name} ${g}g→${cal}kcal` : `${foods[0].name} 100g→${cal}kcal` };
-      }
-      // AI 估算
       const prompt = g
-        ? `台灣食物「${name}」${g}克的卡路里是多少？只回傳數字。`
-        : `台灣食物或飲料「${name}」一般份量的卡路里是多少？只回傳數字。`;
+        ? `台灣食物「${name}」${g}克的卡路里是多少？只回傳數字，不要任何說明。`
+        : `台灣常見食物或飲料「${name}」一般份量的卡路里是多少？飲料以一杯計算，食物以一份計算。只回傳數字，不要任何說明。`;
       const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
@@ -248,7 +241,7 @@ async function handleMessage(event) {
       const d = await r.json();
       const num = parseInt((d.choices?.[0]?.message?.content || '').replace(/[^0-9]/g, ''));
       if (num > 0 && num < 5000) {
-        return { cal: num, label: g ? `${name} ${g}g→${num}kcal(AI)` : `${name}→${num}kcal(AI)` };
+        return { cal: num, label: g ? `${name} ${g}g → ${num} kcal` : `${name} → ${num} kcal` };
       }
       return null;
     }
