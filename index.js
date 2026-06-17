@@ -141,7 +141,7 @@ async function handleImageMessage(event) {
 async function handleMessage(event) {
   const userId = event.source.userId;
   // 正規化：全形空格→半形、多空格→單一空格
-  const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 
   // 處理圖片辨識後選餐別
