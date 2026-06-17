@@ -81,7 +81,7 @@ async function handleImageMessage(event) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
       body: JSON.stringify({
-        model: 'mistralai/mistral-small-3.2-24b-instruct:free',
+        model: 'google/gemini-2.0-flash-001',
         messages: [{
           role: 'user',
           content: [
@@ -236,7 +236,7 @@ async function handleMessage(event) {
       const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
-        body: JSON.stringify({ model: 'mistralai/mistral-small-3.2-24b-instruct:free', messages: [{ role: 'user', content: prompt }] }),
+        body: JSON.stringify({ model: 'google/gemini-2.0-flash-001', messages: [{ role: 'user', content: prompt }] }),
       });
       const d = await r.json();
       const num = parseInt((d.choices?.[0]?.message?.content || '').replace(/[^0-9]/g, ''));
@@ -262,7 +262,7 @@ async function handleMessage(event) {
         const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
-          body: JSON.stringify({ model: 'mistralai/mistral-small-3.2-24b-instruct:free', messages: [{ role: 'user', content: multiPrompt }] }),
+          body: JSON.stringify({ model: 'google/gemini-2.0-flash-001', messages: [{ role: 'user', content: multiPrompt }] }),
         });
         const aiData = await aiRes.json();
         const aiText = aiData.choices?.[0]?.message?.content?.trim() || '';
