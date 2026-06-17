@@ -1,4 +1,5 @@
 const express = require('express');
+console.log('=== BOT VERSION: gemini-2.0-flash-001 ===');
 const line = require('@line/bot-sdk');
 const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
@@ -140,7 +141,7 @@ async function handleImageMessage(event) {
 async function handleMessage(event) {
   const userId = event.source.userId;
   // 正規化：全形空格→半形、多空格→單一空格
-  const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 
   // 處理圖片辨識後選餐別
