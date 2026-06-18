@@ -141,7 +141,7 @@ async function handleImageMessage(event) {
 async function handleMessage(event) {
   const userId = event.source.userId;
   // 正規化：全形空格→半形、多空格→單一空格
-  const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 
   // 處理圖片辨識後選餐別
@@ -240,6 +240,7 @@ async function handleMessage(event) {
         body: JSON.stringify({ model: 'google/gemini-2.0-flash-001', messages: [{ role: 'user', content: prompt }] }),
       });
       const d = await r.json();
+      console.log('OpenRouter 回應:', JSON.stringify(d).substring(0, 500));
       const num = parseInt((d.choices?.[0]?.message?.content || '').replace(/[^0-9]/g, ''));
       if (num > 0 && num < 5000) {
         return { cal: num, label: g ? `${name} ${g}g → ${num} kcal` : `${name} → ${num} kcal` };
