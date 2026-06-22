@@ -87,7 +87,7 @@ async function handleImageMessage(event) {
           role: 'user',
           content: [
             { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageBase64}` } },
-            { type: 'text', text: '這張圖片裡有什麼食物？請用繁體中文列出所有食物和估算的總卡路里。格式只能是這兩行：\n食物：XXX、XXX\n卡路里：數字\n不要其他任何說明或單位文字。' }
+            { type: 'text', text: '這張圖片裡有什麼食物？請用繁體中文列出所有食物和估算的總卡路里與蛋白質。格式只能是這三行：\n食物：XXX、XXX\n卡路里：數字\n蛋白質：數字\n不要其他任何說明或單位文字。' }
           ]
         }]
       }),
@@ -102,9 +102,11 @@ async function handleImageMessage(event) {
       return replyText(event, '無法辨識圖片\n請直接輸入文字記錄\n例：午餐 雞腿便當');
     }
 
-    // 解析卡路里
+    // 解析卡路里＋蛋白質
     const calMatch = aiText.match(/卡路里[：:]\s*(\d+)/);
     const estimatedCal = calMatch ? parseInt(calMatch[1]) : null;
+    const proteinMatch = aiText.match(/蛋白質[：:]\s*([\d.]+)/);
+    const estimatedProtein = proteinMatch ? parseFloat(proteinMatch[1]) : 0;
     const foodMatch = aiText.match(/食物[：:]\s*(.+)/);
     const foodDesc = foodMatch ? foodMatch[1].trim() : '食物';
 
@@ -113,14 +115,14 @@ async function handleImageMessage(event) {
     }
 
     // 暫存辨識結果，等用戶選餐別
-    pendingImageMeal[userId] = { foodDesc, estimatedCal, expiry: Date.now() + 60000 };
+    pendingImageMeal[userId] = { foodDesc, estimatedCal, estimatedProtein, expiry: Date.now() + 60000 };
 
     // 用 Quick Reply 讓用戶選餐別
     return client.replyMessage({
       replyToken: event.replyToken,
       messages: [{
         type: 'text',
-        text: `🔍 辨識結果：\n${foodDesc}\n估算：${estimatedCal} kcal\n\n這是哪一餐？`,
+        text: `🔍 辨識結果：\n${foodDesc}\n估算：${estimatedCal} kcal／蛋白質 ${estimatedProtein}g\n\n這是哪一餐？`,
         quickReply: {
           items: [
             { type: 'action', action: { type: 'message', label: '🌅 早餐', text: '記錄圖片 早餐' } },
@@ -153,23 +155,24 @@ async function handleMessage(event) {
       return replyText(event, '辨識結果已過期，請重新傳送食物照片');
     }
     delete pendingImageMeal[userId];
-    const { foodDesc, estimatedCal } = pending;
+    const { foodDesc, estimatedCal, estimatedProtein } = pending;
     await supabase.from('meal_records').insert({
       user_id: userId, team_id: null, meal_type: mealType,
-      food_name: foodDesc, calories: estimatedCal,
+      food_name: foodDesc, calories: estimatedCal, protein: estimatedProtein || 0,
     });
     const today = new Date().toISOString().split('T')[0];
-    const { data: todayMeals } = await supabase.from('meal_records').select('calories')
+    const { data: todayMeals } = await supabase.from('meal_records').select('calories, protein')
       .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`);
     const todayTotal = todayMeals ? todayMeals.reduce((s, r) => s + r.calories, 0) : estimatedCal;
+    const todayProtein = todayMeals ? todayMeals.reduce((s, r) => s + (r.protein || 0), 0) : (estimatedProtein || 0);
     const { data: memberData } = await supabase.from('team_members').select('calorie_goal')
       .eq('user_id', userId).order('joined_at', { ascending: false }).limit(1);
     const goal = memberData?.[0]?.calorie_goal || 1500;
     const remaining = goal - todayTotal;
     const summaryMsg = remaining > 0
-      ? `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n還剩 ${remaining} kcal 可以吃`
-      : `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n⚠️ 已超標 ${Math.abs(remaining)} kcal`;
-    return replyText(event, `✅ ${mealType}已記錄\n${foodDesc} → ${estimatedCal} kcal\n\n${summaryMsg}`);
+      ? `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n還剩 ${remaining} kcal 可以吃\n💪 蛋白質 ${todayProtein.toFixed(1)}g`
+      : `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n⚠️ 已超標 ${Math.abs(remaining)} kcal\n💪 蛋白質 ${todayProtein.toFixed(1)}g`;
+    return replyText(event, `✅ ${mealType}已記錄\n${foodDesc} → ${estimatedCal} kcal／蛋白質 ${estimatedProtein || 0}g\n\n${summaryMsg}`);
   }
 
   await supabase.from('users').upsert({ id: userId });
@@ -229,11 +232,11 @@ async function handleMessage(event) {
       foodName = rawInput;
     }
 
-    // 輔助函式：直接用 AI 估算單一食物卡路里
+    // 輔助函式：用 AI 估算單一食物卡路里＋蛋白質
     async function lookupCalories(name, g) {
       const prompt = g
-        ? `台灣食物「${name}」${g}克的卡路里是多少？只回傳數字，不要任何說明。`
-        : `台灣常見食物或飲料「${name}」一般份量的卡路里是多少？飲料以一杯計算，食物以一份計算。只回傳數字，不要任何說明。`;
+        ? `台灣食物「${name}」${g}克的營養資訊。只回傳以下格式兩行，不要其他說明：\n卡路里：數字\n蛋白質：數字`
+        : `台灣常見食物或飲料「${name}」一般份量（飲料一杯、食物一份）的營養資訊。只回傳以下格式兩行，不要其他說明：\n卡路里：數字\n蛋白質：數字`;
       const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
@@ -241,18 +244,24 @@ async function handleMessage(event) {
       });
       const d = await r.json();
       console.log('OpenRouter 回應:', JSON.stringify(d).substring(0, 500));
-      const num = parseInt((d.choices?.[0]?.message?.content || '').replace(/[^0-9]/g, ''));
-      if (num > 0 && num < 5000) {
-        return { cal: num, label: g ? `${name} ${g}g → ${num} kcal` : `${name} → ${num} kcal` };
+      const content = d.choices?.[0]?.message?.content || '';
+      const calMatch = content.match(/卡路里[：:]\s*(\d+)/);
+      const proteinMatch = content.match(/蛋白質[：:]\s*([\d.]+)/);
+      const cal = calMatch ? parseInt(calMatch[1]) : 0;
+      const protein = proteinMatch ? parseFloat(proteinMatch[1]) : 0;
+      if (cal > 0 && cal < 5000) {
+        const label = g ? `${name} ${g}g → ${cal} kcal／蛋白質 ${protein}g` : `${name} → ${cal} kcal／蛋白質 ${protein}g`;
+        return { cal, protein, label };
       }
       return null;
     }
 
-    let calories, calNote;
+    let calories, calNote, proteinTotal = 0;
 
     if (directCal) {
       calories = directCal;
       calNote = `${foodName} ${directCal} kcal`;
+      proteinTotal = 0;
     } else {
       // 判斷是否為多食物輸入（含有多個克數標記或空格分隔多項食物）
       const hasMultiple = (rawInput.match(/(\d+)(克|g|公克)/gi) || []).length > 1 ||
@@ -260,7 +269,7 @@ async function handleMessage(event) {
 
       if (hasMultiple || (!grams && !gramInNameMatch && rawInput.split(/\s+/).length > 2)) {
         // 多食物模式：交給 AI 直接算
-        const multiPrompt = `以下是一餐的食物清單，請計算每項食物的卡路里後加總。\n食物：${rawInput}\n\n請用以下格式回答（每行一項）：\n食物名 份量 → 卡路里kcal\n...\n合計：總卡路里kcal\n\n注意：最後一行必須是「合計：數字kcal」格式。`;
+        const multiPrompt = `以下是一餐的食物清單，請計算每項食物的卡路里和蛋白質後加總。\n食物：${rawInput}\n\n請用以下格式回答（每行一項）：\n食物名 份量 → 卡路里kcal 蛋白質Xg\n...\n合計：總卡路里kcal 蛋白質總克數g\n\n注意：最後一行必須是「合計：數字kcal 蛋白質數字g」格式。`;
         const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
@@ -269,9 +278,16 @@ async function handleMessage(event) {
         const aiData = await aiRes.json();
         const aiText = aiData.choices?.[0]?.message?.content?.trim() || '';
         console.log('多食物 AI 回應:', aiText);
-        const totalMatch = aiText.match(/合計[：:]\s*(\d+)/);
+        const totalMatch = aiText.match(/合計[：:]\s*(\d+)kcal\s*蛋白質\s*([\d.]+)g/);
+        const calOnlyMatch = aiText.match(/合計[：:]\s*(\d+)/);
         if (totalMatch) {
           calories = parseInt(totalMatch[1]);
+          proteinTotal = parseFloat(totalMatch[2]);
+          calNote = aiText.replace(/合計[：:].*$/m, '').trim() + `\n合計 ${calories} kcal／蛋白質 ${proteinTotal}g`;
+          foodName = rawInput;
+        } else if (calOnlyMatch) {
+          calories = parseInt(calOnlyMatch[1]);
+          proteinTotal = 0;
           calNote = aiText.replace(/合計[：:]\s*\d+kcal/g, '').trim() + `\n合計 ${calories} kcal`;
           foodName = rawInput;
         } else {
@@ -285,6 +301,7 @@ async function handleMessage(event) {
         }
         calories = result.cal;
         calNote = result.label;
+        proteinTotal = result.protein || 0;
       }
     }
 
@@ -294,16 +311,18 @@ async function handleMessage(event) {
       meal_type: mealType,
       food_name: foodName,
       calories,
+      protein: proteinTotal || 0,
     });
 
-    // 查今日總卡路里
+    // 查今日總卡路里＋蛋白質
     const today = new Date().toISOString().split('T')[0];
     const { data: todayMeals } = await supabase
       .from('meal_records')
-      .select('calories')
+      .select('calories, protein')
       .eq('user_id', userId)
       .gte('recorded_at', `${today}T00:00:00`);
     const todayTotal = todayMeals ? todayMeals.reduce((s, r) => s + r.calories, 0) : calories;
+    const todayProtein = todayMeals ? todayMeals.reduce((s, r) => s + (r.protein || 0), 0) : (proteinTotal || 0);
 
     // 查用戶目標熱量
     const { data: memberData } = await supabase
@@ -317,9 +336,9 @@ async function handleMessage(event) {
 
     let summaryMsg;
     if (remaining > 0) {
-      summaryMsg = `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n還剩 ${remaining} kcal 可以吃`;
+      summaryMsg = `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n還剩 ${remaining} kcal 可以吃\n💪 蛋白質 ${todayProtein.toFixed(1)}g`;
     } else {
-      summaryMsg = `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n⚠️ 已超標 ${Math.abs(remaining)} kcal`;
+      summaryMsg = `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n⚠️ 已超標 ${Math.abs(remaining)} kcal\n💪 蛋白質 ${todayProtein.toFixed(1)}g`;
     }
 
     return replyText(event, `✅ ${mealType}已記錄\n${calNote}\n\n${summaryMsg}`);
@@ -330,15 +349,16 @@ async function handleMessage(event) {
     const today = new Date().toISOString().split('T')[0];
     const { data } = await supabase
       .from('meal_records')
-      .select('calories, meal_type, food_name')
+      .select('calories, protein, meal_type, food_name')
       .eq('user_id', userId)
       .gte('recorded_at', `${today}T00:00:00`)
       .lte('recorded_at', `${today}T23:59:59`);
 
     if (!data || data.length === 0) return replyText(event, '今天還沒有飲食記錄 🍽️');
     const total = data.reduce((sum, r) => sum + r.calories, 0);
-    const list = data.map(r => `${r.meal_type} ${r.food_name} ${r.calories}kcal`).join('\n');
-    return replyText(event, `📊 今日飲食：\n${list}\n\n總計：${total} kcal`);
+    const totalProtein = data.reduce((sum, r) => sum + (r.protein || 0), 0);
+    const list = data.map(r => `${r.meal_type} ${r.food_name} ${r.calories}kcal／蛋白質${r.protein || 0}g`).join('\n');
+    return replyText(event, `📊 今日飲食：\n${list}\n\n總計：${total} kcal\n💪 蛋白質：${totalProtein.toFixed(1)}g`);
   }
 
   // 我的進度
