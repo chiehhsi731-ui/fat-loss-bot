@@ -1,4 +1,158 @@
+const express = require('express');
+console.log('=== BOT VERSION: gemini-2.5-flash ===');
+const line = require('@line/bot-sdk');
+const { createClient } = require('@supabase/supabase-js');
+const cron = require('node-cron');
 
+const app = express();
+
+const lineConfig = {
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.LINE_CHANNEL_SECRET,
+};
+
+const client = new line.messagingApi.MessagingApiClient({
+  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
+});
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+app.use('/webhook', line.middleware(lineConfig));
+
+app.post('/webhook', async (req, res) => {
+  res.status(200).end();
+  const events = req.body.events;
+  for (const event of events) {
+    if (event.type === 'message' && event.message.type === 'text') {
+      await handleMessage(event);
+    } else if (event.type === 'message' && event.message.type === 'image') {
+      await handleImageMessage(event);
+    } else if (event.type === 'follow') {
+      await handleFollow(event);
+    }
+  }
+});
+
+async function handleFollow(event) {
+  const userId = event.source.userId;
+  const profile = await client.getProfile(userId);
+  await supabase.from('users').upsert({
+    id: userId,
+    display_name: profile.displayName,
+    picture_url: profile.pictureUrl,
+  });
+  await client.replyMessage({
+    replyToken: event.replyToken,
+    messages: [{
+      type: 'text',
+      text: `歡迎加入減脂挑戰！🏋️\n\n先來設定你的目標吧 👇`,
+      quickReply: {
+        items: [
+          { type: 'action', action: { type: 'message', label: '減脂 1200kcal/天', text: '設定熱量目標 1200' } },
+          { type: 'action', action: { type: 'message', label: '輕鬆 1500kcal/天', text: '設定熱量目標 1500' } },
+          { type: 'action', action: { type: 'message', label: '維持 1800kcal/天', text: '設定熱量目標 1800' } },
+          { type: 'action', action: { type: 'message', label: '自訂目標', text: '設定熱量目標' } },
+        ]
+      }
+    }],
+  });
+}
+
+// 暫存用戶等待選餐別的狀態
+const pendingImageMeal = {};
+
+async function handleImageMessage(event) {
+  const userId = event.source.userId;
+  const messageId = event.message.id;
+
+  try {
+    // 下載圖片（相容新版 LINE SDK）
+    const response = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
+      headers: { Authorization: `Bearer ${process.env.LINE_CHANNEL_ACCESS_TOKEN}` }
+    });
+    const arrayBuffer = await response.arrayBuffer();
+    const imageBase64 = Buffer.from(arrayBuffer).toString('base64');
+    const mimeType = response.headers.get('content-type') || 'image/jpeg';
+
+    // 呼叫 Gemini Vision 辨識食物
+    const geminiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
+      body: JSON.stringify({
+        model: 'google/gemini-2.5-flash',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image_url', image_url: { url: `data:${mimeType};base64,${imageBase64}` } },
+            { type: 'text', text: '這張圖片裡有什麼食物？請用繁體中文列出所有食物和估算的總卡路里。格式只能是這兩行：\n食物：XXX、XXX\n卡路里：數字\n不要其他任何說明或單位文字。' }
+          ]
+        }]
+      }),
+    });
+
+    const geminiData = await geminiRes.json();
+    console.log('Vision 完整回應:', JSON.stringify(geminiData).substring(0, 500));
+    const aiText = geminiData.choices?.[0]?.message?.content?.trim() || '';
+    console.log('Vision aiText:', aiText);
+
+    if (!aiText) {
+      return replyText(event, '無法辨識圖片\n請直接輸入文字記錄\n例：午餐 雞腿便當');
+    }
+
+    // 解析卡路里
+    const calMatch = aiText.match(/卡路里[：:]\s*(\d+)/);
+    const estimatedCal = calMatch ? parseInt(calMatch[1]) : null;
+    const foodMatch = aiText.match(/食物[：:]\s*(.+)/);
+    const foodDesc = foodMatch ? foodMatch[1].trim() : '食物';
+
+    if (!estimatedCal) {
+      return replyText(event, `辨識結果：\n${aiText}\n\n請手動記錄：\n午餐 食物名稱 卡路里`);
+    }
+
+    // 暫存辨識結果，等用戶選餐別
+    pendingImageMeal[userId] = { foodDesc, estimatedCal, expiry: Date.now() + 60000 };
+
+    // 用 Quick Reply 讓用戶選餐別
+    return client.replyMessage({
+      replyToken: event.replyToken,
+      messages: [{
+        type: 'text',
+        text: `🔍 辨識結果：\n${foodDesc}\n估算：${estimatedCal} kcal\n\n這是哪一餐？`,
+        quickReply: {
+          items: [
+            { type: 'action', action: { type: 'message', label: '🌅 早餐', text: '記錄圖片 早餐' } },
+            { type: 'action', action: { type: 'message', label: '☀️ 午餐', text: '記錄圖片 午餐' } },
+            { type: 'action', action: { type: 'message', label: '🌙 晚餐', text: '記錄圖片 晚餐' } },
+            { type: 'action', action: { type: 'message', label: '🍎 點心', text: '記錄圖片 點心' } },
+          ]
+        }
+      }]
+    });
+
+  } catch (e) {
+    console.error('圖片辨識失敗:', e.message, e.stack);
+    return replyText(event, `圖片辨識失敗：${e.message}\n請直接輸入文字記錄\n例：午餐 雞腿便當 650`);
+  }
+}
+
+async function handleMessage(event) {
+  const userId = event.source.userId;
+  // 正規化：全形空格→半形、多空格→單一空格
+  const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
+
+
+  // 處理圖片辨識後選餐別
+  const imgMealMatch = text.match(/^記錄圖片\s*(早餐|午餐|晚餐|點心)$/);
+  if (imgMealMatch) {
+    const mealType = imgMealMatch[1];
+    const pending = pendingImageMeal[userId];
+    if (!pending || Date.now() > pending.expiry) {
+      return replyText(event, '辨識結果已過期，請重新傳送食物照片');
+    }
+    delete pendingImageMeal[userId];
     const { foodDesc, estimatedCal } = pending;
     await supabase.from('meal_records').insert({
       user_id: userId, team_id: null, meal_type: mealType,
@@ -9,7 +163,7 @@
       .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`);
     const todayTotal = todayMeals ? todayMeals.reduce((s, r) => s + r.calories, 0) : estimatedCal;
     const { data: memberData } = await supabase.from('team_members').select('calorie_goal')
-      .eq('user_id', userId).order('created_at', { ascending: false }).limit(1);
+      .eq('user_id', userId).order('joined_at', { ascending: false }).limit(1);
     const goal = memberData?.[0]?.calorie_goal || 1500;
     const remaining = goal - todayTotal;
     const summaryMsg = remaining > 0
@@ -83,7 +237,7 @@
       const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
-        body: JSON.stringify({ model: 'google/gemini-2.0-flash-001', messages: [{ role: 'user', content: prompt }] }),
+        body: JSON.stringify({ model: 'google/gemini-2.5-flash', messages: [{ role: 'user', content: prompt }] }),
       });
       const d = await r.json();
       console.log('OpenRouter 回應:', JSON.stringify(d).substring(0, 500));
@@ -110,7 +264,7 @@
         const aiRes = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
-          body: JSON.stringify({ model: 'google/gemini-2.0-flash-001', messages: [{ role: 'user', content: multiPrompt }] }),
+          body: JSON.stringify({ model: 'google/gemini-2.5-flash', messages: [{ role: 'user', content: multiPrompt }] }),
         });
         const aiData = await aiRes.json();
         const aiText = aiData.choices?.[0]?.message?.content?.trim() || '';
@@ -156,7 +310,7 @@
       .from('team_members')
       .select('calorie_goal')
       .eq('user_id', userId)
-      .order('created_at', { ascending: false })
+      .order('joined_at', { ascending: false })
       .limit(1);
     const goal = memberData?.[0]?.calorie_goal || 1500;
     const remaining = goal - todayTotal;
@@ -531,7 +685,7 @@ cron.schedule('0 21 * * *', async () => {
     
     const { data: memberData } = await supabase
       .from('team_members').select('calorie_goal').eq('user_id', uid)
-      .order('created_at', { ascending: false }).limit(1);
+      .order('joined_at', { ascending: false }).limit(1);
     const goal = memberData?.[0]?.calorie_goal || 1500;
     const remaining = goal - total;
     if (remaining > 0) {
