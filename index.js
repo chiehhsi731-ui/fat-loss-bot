@@ -179,7 +179,7 @@ async function handleMessage(event) {
 
   // 說明指令
   if (text === '說明' || text === 'help' || text === '?') {
-    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n\n🍱 飲食記錄\n早餐 雞胸飯 → 搜尋食物\n午餐 便當 500 → 直接記錄卡路里\n晚餐 地瓜 200 → 同上\n點心 水果 100 → 同上\n\n📈 查詢\n今日熱量 → 查看今日飲食\n我的進度 → 查看本週進度\n隊伍進度 → 查看隊友排行\n\n⚙️ 設定\n設定熱量目標 → 設定每日卡路里\n邀請好友 → 產生邀請訊息\\n加入 邀請碼 → 加入隊伍\\n退出隊伍 → 離開目前隊伍\n刪除早餐/午餐/晚餐/點心 → 刪除今日最新\n刪除體重/體脂/飲水 → 刪除今日最新\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
+    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n\n🍱 飲食記錄\n早餐 雞胸肉 → AI估算卡路里+蛋白質\n午餐 便當 500 → 直接記錄卡路里\n點心 雞胸肉150克 → 指定克數\n傳食物照片 → 自動辨識\n\n📈 查詢\n今日熱量 → 今日飲食+蛋白質總計\n我的進度 → 本週體重體脂\n隊伍進度 → 隊友排行\n\n⚙️ 設定\n設定熱量目標 → 每日卡路里上限\n邀請好友 → 產生邀請連結\n加入 邀請碼 → 加入隊伍\n退出隊伍 → 離開隊伍\n刪除早餐/午餐/晚餐/點心 → 刪除今日最新\n刪除體重/體脂/飲水 → 刪除今日最新\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
   }
 
   // 體重記錄
@@ -751,18 +751,20 @@ cron.schedule('0 9 * * 1', async () => {
     const ranked = [...memberIds].sort((a, b) => (streakByUser[b] || 0) - (streakByUser[a] || 0));
     const medals = ['🥇', '🥈', '🥉'];
 
-    let msg = `📊 ${team.name} 本週週報\n` + '═'.repeat(18) + '\n\n';
+    let msg = `📊 ${team.name} 本週週報\n${'─'.repeat(20)}\n\n`;
     ranked.forEach((uid, i) => {
       const medal = medals[i] || `${i + 1}.`;
       const name = nameByUser[uid] || '隊友';
       const streak = streakByUser[uid] || 0;
       const rec = latestByUser[uid];
-      msg += `${medal} ${name}  🔥${streak}天\n`;
-      if (rec?.weight) msg += `   體重 ${rec.weight}kg`;
-      if (rec?.body_fat) msg += `  體脂 ${rec.body_fat}%`;
-      msg += '\n';
+      msg += `${medal} ${name}\n`;
+      let stats = `   🔥 連續 ${streak}天`;
+      if (rec?.weight) stats += `｜⚖️ ${rec.weight}kg`;
+      if (rec?.body_fat) stats += `｜📉 體脂 ${rec.body_fat}%`;
+      if (!rec?.weight && !rec?.body_fat) stats += `｜尚未記錄體重`;
+      msg += stats + '\n\n';
     });
-    msg += '\n繼續加油！下週見 💪';
+    msg += `${'─'.repeat(20)}\n繼續加油！下週見 💪`;
 
     // 推播給所有隊員
     for (const uid of memberIds) {
