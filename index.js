@@ -778,5 +778,5 @@ cron.schedule('0 9 * * 1', async () => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  setupRichMenu();
+  // Rich Menu 請在 LINE Official Account Manager 手動設定
 });
