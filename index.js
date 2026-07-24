@@ -146,7 +146,7 @@ async function handleImageMessage(event) {
 async function handleMessage(event) {
   const userId = event.source.userId;
   // 正規化：全形空格→半形、多空格→單一空格
-  const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  const text = event.message.text.replace(/[　 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 
   // 處理圖片辨識後選餐別
@@ -168,13 +168,17 @@ async function handleMessage(event) {
       .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`);
     const todayTotal = todayMeals ? todayMeals.reduce((s, r) => s + r.calories, 0) : estimatedCal;
     const todayProtein = todayMeals ? todayMeals.reduce((s, r) => s + (r.protein || 0), 0) : (estimatedProtein || 0);
+    const { data: todayExercise } = await supabase.from('exercise_records').select('calories_burned')
+      .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`);
+    const todayBurned = todayExercise ? todayExercise.reduce((s, r) => s + (r.calories_burned || 0), 0) : 0;
     const { data: memberData } = await supabase.from('team_members').select('calorie_goal')
       .eq('user_id', userId).order('joined_at', { ascending: false }).limit(1);
     const goal = memberData?.[0]?.calorie_goal || 1500;
     const remaining = goal - todayTotal;
+    const burnedLine = todayBurned > 0 ? `\n🔥 今日運動消耗 ${todayBurned} kcal（另計，不影響上方額度）` : '';
     const summaryMsg = remaining > 0
-      ? `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n還剩 ${remaining} kcal 可以吃\n💪 蛋白質 ${todayProtein.toFixed(1)}g`
-      : `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n⚠️ 已超標 ${Math.abs(remaining)} kcal\n💪 蛋白質 ${todayProtein.toFixed(1)}g`;
+      ? `📊 今日攝取 ${todayTotal} kcal／目標 ${goal} kcal\n還剩 ${remaining} kcal 可以吃\n💪 蛋白質 ${todayProtein.toFixed(1)}g${burnedLine}`
+      : `📊 今日攝取 ${todayTotal} kcal／目標 ${goal} kcal\n⚠️ 已超標 ${Math.abs(remaining)} kcal\n💪 蛋白質 ${todayProtein.toFixed(1)}g${burnedLine}`;
     return replyText(event, `✅ ${mealType}已記錄\n${foodDesc} → ${estimatedCal} kcal／蛋白質 ${estimatedProtein || 0}g\n\n${summaryMsg}`);
   }
 
@@ -182,7 +186,7 @@ async function handleMessage(event) {
 
   // 說明指令
   if (text === '說明' || text === 'help' || text === '?') {
-    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n\n🍱 飲食記錄\n早餐 雞胸肉 → AI估算卡路里+蛋白質\n午餐 便當 500 → 直接記錄卡路里\n點心 雞胸肉150克 → 指定克數\n傳食物照片 → 自動辨識\n\n📈 查詢\n今日熱量 → 今日飲食+蛋白質總計\n我的進度 → 本週體重體脂\n隊伍進度 → 隊友排行\n\n⚙️ 設定\n設定熱量目標 → 每日卡路里上限\n邀請好友 → 產生邀請連結\n加入 邀請碼 → 加入隊伍\n退出隊伍 → 離開隊伍\n刪除早餐/午餐/晚餐/點心 → 刪除今日最新\n刪除體重/體脂/飲水 → 刪除今日最新\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
+    return replyText(event, `🏋️ 減脂挑戰指令說明\n\n📊 身體數據記錄\n體重 62.5 → 記錄體重\n體脂 21.3 → 記錄體脂\n飲水 500 → 記錄飲水(ml)\n睡眠 7.5 → 記錄睡眠時數\n運動 跑步 30分鐘 → AI估算消耗熱量\n\n🍱 飲食記錄\n早餐 雞胸肉 → AI估算卡路里+蛋白質\n午餐 便當 500 → 直接記錄卡路里\n點心 雞胸肉150克 → 指定克數\n傳食物照片 → 自動辨識\n\n📈 查詢\n今日熱量 → 今日飲食+運動+蛋白質總計\n我的進度 → 本週體重體脂\n隊伍進度 → 隊友排行\n\n⚙️ 設定\n設定熱量目標 → 每日卡路里上限\n邀請好友 → 產生邀請連結\n加入 邀請碼 → 加入隊伍\n退出隊伍 → 離開隊伍\n刪除早餐/午餐/晚餐/點心 → 刪除今日最新\n刪除體重/體脂/飲水/睡眠/運動 → 刪除今日最新\n\n💪 開啟APP\n👉 https://liff.line.me/2010377807-QvlNPosn`);
   }
 
   // 體重記錄
@@ -208,6 +212,73 @@ async function handleMessage(event) {
     if (isNaN(water)) return replyText(event, '格式錯誤，請輸入：飲水 500');
     await supabase.from('body_records').insert({ user_id: userId, water_ml: water, team_id: null });
     return replyText(event, `✅ 飲水已記錄：${water} ml 💧`);
+  }
+
+  // 睡眠記錄
+  if (text.startsWith('睡眠')) {
+    const hours = parseFloat(text.replace('睡眠', '').trim());
+    if (isNaN(hours) || hours <= 0 || hours > 24) return replyText(event, '格式錯誤，請輸入：睡眠 7.5');
+    await supabase.from('sleep_records').insert({ user_id: userId, hours });
+    let msg = `😴 睡眠已記錄：${hours} 小時`;
+    if (hours < 6) msg += `\n💡 睡眠有點不足，試著早點休息～`;
+    else if (hours >= 7 && hours <= 9) msg += `\n✅ 睡眠時數很理想！`;
+    return replyText(event, msg);
+  }
+
+  // 運動記錄：運動 跑步 30分鐘
+  const exerciseMatch = text.match(/^運動\s+(.+?)\s*(\d+)\s*分(?:鐘)?$/);
+  if (exerciseMatch) {
+    const exerciseType = exerciseMatch[1].trim();
+    const duration = parseInt(exerciseMatch[2]);
+
+    // 取最新體重，讓 AI 估算更準確
+    const { data: latestBody } = await supabase.from('body_records')
+      .select('weight').eq('user_id', userId).not('weight', 'is', null)
+      .order('recorded_at', { ascending: false }).limit(1);
+    const weight = latestBody?.[0]?.weight;
+
+    const prompt = weight
+      ? `一位體重${weight}公斤的人，進行「${exerciseType}」運動${duration}分鐘，估算消耗的卡路里。只回傳以下格式一行，不要其他說明：\n消耗：數字`
+      : `一般成人進行「${exerciseType}」運動${duration}分鐘，估算消耗的卡路里。只回傳以下格式一行，不要其他說明：\n消耗：數字`;
+
+    let caloriesBurned = 0;
+    try {
+      const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
+        body: JSON.stringify({ model: 'google/gemini-2.5-flash', messages: [{ role: 'user', content: prompt }] }),
+      });
+      const d = await r.json();
+      const content = d.choices?.[0]?.message?.content || '';
+      const burnMatch = content.match(/消耗[：:]\s*(\d+)/);
+      caloriesBurned = burnMatch ? parseInt(burnMatch[1]) : 0;
+    } catch (e) {
+      console.error('運動熱量估算失敗:', e.message);
+    }
+    if (!caloriesBurned) caloriesBurned = Math.round(duration * 5); // AI失敗時的粗估備援
+
+    await supabase.from('exercise_records').insert({
+      user_id: userId,
+      exercise_type: exerciseType,
+      duration_minutes: duration,
+      calories_burned: caloriesBurned,
+    });
+
+    const today = new Date().toISOString().split('T')[0];
+    const { data: todayExercise } = await supabase.from('exercise_records').select('calories_burned')
+      .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`);
+    const totalBurned = todayExercise ? todayExercise.reduce((s, r) => s + (r.calories_burned || 0), 0) : caloriesBurned;
+
+    const { data: todayMeals } = await supabase.from('meal_records').select('calories')
+      .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`);
+    const todayEaten = todayMeals ? todayMeals.reduce((s, r) => s + r.calories, 0) : 0;
+
+    const { data: memberData } = await supabase.from('team_members').select('calorie_goal')
+      .eq('user_id', userId).order('joined_at', { ascending: false }).limit(1);
+    const goal = memberData?.[0]?.calorie_goal || 1500;
+    const remaining = goal - todayEaten;
+
+    return replyText(event, `🏃 運動已記錄：${exerciseType} ${duration}分鐘\n🔥 估算消耗 ${caloriesBurned} kcal（今日累計消耗 ${totalBurned} kcal）\n\n📊 今日飲食 ${todayEaten} kcal／目標 ${goal} kcal\n還可以吃 ${remaining} kcal`);
   }
 
   // 飲食記錄：AI 自動判斷卡路里
@@ -327,6 +398,11 @@ async function handleMessage(event) {
     const todayTotal = todayMeals ? todayMeals.reduce((s, r) => s + r.calories, 0) : calories;
     const todayProtein = todayMeals ? todayMeals.reduce((s, r) => s + (r.protein || 0), 0) : (proteinTotal || 0);
 
+    // 查今日運動消耗
+    const { data: todayExercise } = await supabase.from('exercise_records').select('calories_burned')
+      .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`);
+    const todayBurned = todayExercise ? todayExercise.reduce((s, r) => s + (r.calories_burned || 0), 0) : 0;
+
     // 查用戶目標熱量
     const { data: memberData } = await supabase
       .from('team_members')
@@ -336,12 +412,13 @@ async function handleMessage(event) {
       .limit(1);
     const goal = memberData?.[0]?.calorie_goal || 1500;
     const remaining = goal - todayTotal;
+    const burnedLine = todayBurned > 0 ? `\n🔥 今日運動消耗 ${todayBurned} kcal（另計，不影響上方額度）` : '';
 
     let summaryMsg;
     if (remaining > 0) {
-      summaryMsg = `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n還剩 ${remaining} kcal 可以吃\n💪 蛋白質 ${todayProtein.toFixed(1)}g`;
+      summaryMsg = `📊 今日攝取 ${todayTotal} kcal／目標 ${goal} kcal\n還剩 ${remaining} kcal 可以吃\n💪 蛋白質 ${todayProtein.toFixed(1)}g${burnedLine}`;
     } else {
-      summaryMsg = `📊 今日 ${todayTotal} kcal／目標 ${goal} kcal\n⚠️ 已超標 ${Math.abs(remaining)} kcal\n💪 蛋白質 ${todayProtein.toFixed(1)}g`;
+      summaryMsg = `📊 今日攝取 ${todayTotal} kcal／目標 ${goal} kcal\n⚠️ 已超標 ${Math.abs(remaining)} kcal\n💪 蛋白質 ${todayProtein.toFixed(1)}g${burnedLine}`;
     }
 
     return replyText(event, `✅ ${mealType}已記錄\n${calNote}\n\n${summaryMsg}`);
@@ -356,12 +433,21 @@ async function handleMessage(event) {
       .eq('user_id', userId)
       .gte('recorded_at', `${today}T00:00:00`)
       .lte('recorded_at', `${today}T23:59:59`);
+    const { data: exerciseData } = await supabase
+      .from('exercise_records')
+      .select('calories_burned')
+      .eq('user_id', userId)
+      .gte('recorded_at', `${today}T00:00:00`)
+      .lte('recorded_at', `${today}T23:59:59`);
 
-    if (!data || data.length === 0) return replyText(event, '今天還沒有飲食記錄 🍽️');
-    const total = data.reduce((sum, r) => sum + r.calories, 0);
-    const totalProtein = data.reduce((sum, r) => sum + (r.protein || 0), 0);
-    const list = data.map(r => `${r.meal_type} ${r.food_name} ${r.calories}kcal／蛋白質${r.protein || 0}g`).join('\n');
-    return replyText(event, `📊 今日飲食：\n${list}\n\n總計：${total} kcal\n💪 蛋白質：${totalProtein.toFixed(1)}g`);
+    if ((!data || data.length === 0) && (!exerciseData || exerciseData.length === 0)) return replyText(event, '今天還沒有飲食記錄 🍽️');
+    const total = data ? data.reduce((sum, r) => sum + r.calories, 0) : 0;
+    const totalProtein = data ? data.reduce((sum, r) => sum + (r.protein || 0), 0) : 0;
+    const totalBurned = exerciseData ? exerciseData.reduce((sum, r) => sum + (r.calories_burned || 0), 0) : 0;
+    const list = data && data.length > 0 ? data.map(r => `${r.meal_type} ${r.food_name} ${r.calories}kcal／蛋白質${r.protein || 0}g`).join('\n') : '（今天還沒有飲食記錄）';
+    let msg = `📊 今日飲食：\n${list}\n\n總攝取：${total} kcal\n💪 蛋白質：${totalProtein.toFixed(1)}g`;
+    if (totalBurned > 0) msg += `\n\n🔥 運動消耗：${totalBurned} kcal（另計）`;
+    return replyText(event, msg);
   }
 
   // 我的進度
@@ -531,11 +617,13 @@ async function handleMessage(event) {
   }
 
   // 刪除最新記錄
-  const deleteMatch = text.match(/^刪除(早餐|午餐|晚餐|點心|體重|體脂|飲水)$/);
+  const deleteMatch = text.match(/^刪除(早餐|午餐|晚餐|點心|體重|體脂|飲水|睡眠|運動)$/);
   if (deleteMatch) {
     const type = deleteMatch[1];
     const isMeal = ['早餐', '午餐', '晚餐', '點心'].includes(type);
     const isBody = ['體重', '體脂', '飲水'].includes(type);
+    const isSleep = type === '睡眠';
+    const isExercise = type === '運動';
     const today = new Date().toISOString().split('T')[0];
 
     if (isMeal) {
@@ -557,6 +645,24 @@ async function handleMessage(event) {
       await supabase.from('body_records').delete().eq('id', data[0].id);
       const val = data[0][colMap[type]];
       return replyText(event, `🗑️ 已刪除${type}記錄：${val}`);
+    }
+
+    if (isSleep) {
+      const { data } = await supabase.from('sleep_records').select('id, hours')
+        .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`)
+        .order('recorded_at', { ascending: false }).limit(1);
+      if (!data || data.length === 0) return replyText(event, '今天沒有睡眠記錄');
+      await supabase.from('sleep_records').delete().eq('id', data[0].id);
+      return replyText(event, `🗑️ 已刪除睡眠記錄：${data[0].hours} 小時`);
+    }
+
+    if (isExercise) {
+      const { data } = await supabase.from('exercise_records').select('id, exercise_type, duration_minutes')
+        .eq('user_id', userId).gte('recorded_at', `${today}T00:00:00`)
+        .order('recorded_at', { ascending: false }).limit(1);
+      if (!data || data.length === 0) return replyText(event, '今天沒有運動記錄');
+      await supabase.from('exercise_records').delete().eq('id', data[0].id);
+      return replyText(event, `🗑️ 已刪除運動記錄：${data[0].exercise_type} ${data[0].duration_minutes}分鐘`);
     }
   }
 
@@ -704,8 +810,8 @@ cron.schedule('0 21 * * *', async () => {
       .from('meal_records').select('calories').eq('user_id', uid)
       .gte('recorded_at', `${today}T00:00:00`);
     const total = data ? data.reduce((s, r) => s + r.calories, 0) : 0;
-    if (total === 0) return '晚上好！🌙 今天還沒有飲食記錄\n輸入：早餐/午餐/晚餐 + 食物名稱';
-    
+    if (total === 0) return '晚安！🌙 今天還沒有飲食記錄\n輸入：早餐/午餐/晚餐 + 食物名稱';
+
     const { data: memberData } = await supabase
       .from('team_members').select('calorie_goal').eq('user_id', uid)
       .order('joined_at', { ascending: false }).limit(1);
@@ -774,6 +880,68 @@ cron.schedule('0 9 * * 1', async () => {
       try {
         await client.pushMessage({ to: uid, messages: [{ type: 'text', text: msg }] });
       } catch(e) { console.error('週報推播失敗:', uid, e.message); }
+    }
+  }
+}, { timezone: 'Asia/Taipei' });
+
+// 每週日晚上9點：AI 個人週評語與建議
+cron.schedule('0 21 * * 0', async () => {
+  console.log('AI 週評語推播');
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: users } = await supabase.from('users').select('id, display_name');
+  if (!users) return;
+
+  for (const u of users) {
+    try {
+      const uid = u.id;
+      const { data: bodyData } = await supabase.from('body_records').select('weight, body_fat, recorded_at')
+        .eq('user_id', uid).gte('recorded_at', weekAgo).order('recorded_at', { ascending: true });
+      const { data: mealData } = await supabase.from('meal_records').select('calories, protein, recorded_at')
+        .eq('user_id', uid).gte('recorded_at', weekAgo);
+      const { data: sleepData } = await supabase.from('sleep_records').select('hours, recorded_at')
+        .eq('user_id', uid).gte('recorded_at', weekAgo);
+      const { data: exerciseData } = await supabase.from('exercise_records').select('exercise_type, duration_minutes, calories_burned, recorded_at')
+        .eq('user_id', uid).gte('recorded_at', weekAgo);
+
+      const hasData = (bodyData?.length || 0) + (mealData?.length || 0) + (sleepData?.length || 0) + (exerciseData?.length || 0);
+      if (hasData === 0) continue; // 這週完全沒記錄就不打擾
+
+      const weightsOnly = (bodyData || []).filter(d => d.weight);
+      const weightTrend = weightsOnly.length > 1
+        ? `體重從 ${weightsOnly[0].weight}kg 變化到 ${weightsOnly[weightsOnly.length - 1].weight}kg`
+        : (weightsOnly.length === 1 ? `本週僅記錄一次體重：${weightsOnly[0].weight}kg` : '本週沒有體重記錄');
+
+      const avgCal = mealData && mealData.length > 0
+        ? Math.round(mealData.reduce((s, r) => s + r.calories, 0) / 7)
+        : 0;
+      const avgProtein = mealData && mealData.length > 0
+        ? (mealData.reduce((s, r) => s + (r.protein || 0), 0) / 7).toFixed(1)
+        : 0;
+      const avgSleep = sleepData && sleepData.length > 0
+        ? (sleepData.reduce((s, r) => s + r.hours, 0) / sleepData.length).toFixed(1)
+        : null;
+      const exerciseCount = exerciseData ? exerciseData.length : 0;
+      const totalBurned = exerciseData ? exerciseData.reduce((s, r) => s + (r.calories_burned || 0), 0) : 0;
+
+      const summary = `${weightTrend}\n平均每日攝取熱量：約${avgCal}kcal，平均蛋白質：${avgProtein}g\n睡眠：${avgSleep ? `平均${avgSleep}小時（記錄${sleepData.length}天）` : '本週沒有記錄'}\n運動：本週運動${exerciseCount}次，共消耗約${totalBurned}kcal`;
+
+      const prompt = `你是一位親切但專業的減脂教練。根據以下使用者本週的健康數據，用繁體中文寫一段簡短的評語與建議（3-5句話，語氣鼓勵但誠實，像朋友聊天一樣自然，不要條列）：\n\n${summary}`;
+
+      const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}` },
+        body: JSON.stringify({ model: 'google/gemini-2.5-flash', messages: [{ role: 'user', content: prompt }] }),
+      });
+      const d = await r.json();
+      const comment = d.choices?.[0]?.message?.content?.trim();
+      if (!comment) continue;
+
+      await client.pushMessage({
+        to: uid,
+        messages: [{ type: 'text', text: `📝 本週AI評語\n${'─'.repeat(16)}\n\n${comment}` }],
+      });
+    } catch (e) {
+      console.error('AI週評語失敗:', u.id, e.message);
     }
   }
 }, { timezone: 'Asia/Taipei' });
