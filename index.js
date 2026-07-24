@@ -5,6 +5,9 @@ const { createClient } = require('@supabase/supabase-js');
 const cron = require('node-cron');
 
 const app = express();
+app.get('/', (req, res) => {
+  res.send('OK');
+});
 
 const lineConfig = {
   channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
